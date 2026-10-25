@@ -1,0 +1,8 @@
+{
+  "name": "Digital Twin of the Shoulder",
+  "description": "An open-source, AI-assisted orthopedic research and preoperative planning platform for patient-specific shoulder anatomy reconstruction and arthroplasty planning.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

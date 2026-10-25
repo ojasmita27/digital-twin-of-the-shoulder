@@ -1,0 +1,11 @@
+[
+  "backend/tests/test_api.py::test_create_and_get_case",
+  "backend/tests/test_api.py::test_delete_case",
+  "backend/tests/test_api.py::test_get_case_not_found",
+  "backend/tests/test_api.py::test_health_endpoint",
+  "backend/tests/test_api.py::test_invalid_input_handling",
+  "backend/tests/test_api.py::test_list_cases_empty",
+  "backend/tests/test_api.py::test_nested_field_serialization_and_updates",
+  "backend/tests/test_api.py::test_persistence_across_reinitialization",
+  "backend/tests/test_api.py::test_root"
+]
