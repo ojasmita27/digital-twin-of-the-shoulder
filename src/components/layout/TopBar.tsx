@@ -3,21 +3,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { NavRoute } from './Sidebar';
 import { ResearchCase } from '../../types/case';
-import { apiClient, BackendHealthState } from '../../services/apiClient';
 import { useTheme } from '../../context/ThemeContext';
 import {
-  Server,
-  FolderOpen,
-  ChevronDown,
-  Bell,
+  Search,
   Sun,
   Moon,
-  Search,
-  Activity,
-  Plus,
+  ChevronDown,
+  FolderOpen,
+  User,
+  Settings,
+  Bell,
+  Check,
+  Stethoscope,
 } from 'lucide-react';
 
 interface TopBarProps {
@@ -42,93 +42,86 @@ export const TopBar: React.FC<TopBarProps> = ({
   unreadNotificationsCount = 0,
 }) => {
   const { theme, toggleTheme } = useTheme();
-  const [backendHealth, setBackendHealth] = useState<BackendHealthState>(apiClient.getHealthState());
-  const [showCaseDropdown, setShowCaseDropdown] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const unsubscribe = apiClient.subscribeHealth((state) => {
-      setBackendHealth(state);
-    });
-    apiClient.checkHealth();
-    const interval = setInterval(() => {
-      apiClient.checkHealth();
-    }, 30000);
-    return () => {
-      unsubscribe();
-      clearInterval(interval);
+    const handleClickOutside = (event: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(event.target as Node)) {
+        setShowProfileMenu(false);
+      }
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setShowSearchDropdown(false);
+      }
     };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  const routeTitles: Record<NavRoute, string> = {
-    overview: 'Clinical Overview',
-    cases: 'Research Cases Registry',
-    imaging: 'CT Imaging Workspace',
-    segmentation: 'Anatomical Segmentation',
-    anatomy3d: '3D Shoulder Reconstruction',
-    measurements: 'Morphometric Biomechanics',
-    planning: 'Arthroplasty Planning',
-    reports: 'Preoperative Reports',
-    research: 'Research Datasets',
-    settings: 'Developer Settings',
-  };
 
   const filteredCases = cases.filter(
     (c) =>
       c.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
       c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.demographics.researchSubjectId.toLowerCase().includes(searchQuery.toLowerCase())
+      c.demographics.researchSubjectId.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.demographics.indication.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   return (
-    <header className="h-14 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-5 flex items-center justify-between gap-4 select-none z-30 transition-colors">
-      {/* Brand & Route Wordmark */}
-      <div className="flex items-center gap-3 shrink-0">
-        <a
-          href="#overview"
-          onClick={(e) => {
-            e.preventDefault();
-            onRouteChange('overview');
-          }}
-          className="flex items-center gap-2 text-slate-900 dark:text-slate-100 hover:text-teal-600 dark:hover:text-cyan-400 transition-colors"
-        >
-          <span className="w-6 h-6 rounded bg-teal-600/10 dark:bg-cyan-500/10 border border-teal-600/20 dark:border-cyan-500/30 flex items-center justify-center text-teal-700 dark:text-cyan-400 font-bold text-xs">
-            ST
-          </span>
-          <span className="text-sm font-bold tracking-tight">ShoulderTwin</span>
-        </a>
-        <span className="text-slate-400 dark:text-slate-600 font-mono text-xs">/</span>
-        <span className="text-xs font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap">
-          {routeTitles[currentRoute]}
-        </span>
-      </div>
-
-      {/* Case Quick Search Bar */}
-      <div className="hidden md:flex items-center relative max-w-xs w-full">
-        <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+    <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200/90 dark:border-slate-800 px-6 flex items-center justify-between gap-6 select-none z-30 transition-colors">
+      {/* Search Bar - Exactly matching Reference: Search case ID or patient... */}
+      <div ref={searchRef} className="relative flex-1 max-w-md">
+        <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
         <input
           type="text"
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Quick search case or subject ID..."
-          className="w-full bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md pl-8 pr-3 py-1 text-xs text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-hidden focus:border-teal-500 dark:focus:border-cyan-500 font-mono transition-colors"
+          onChange={(e) => {
+            setSearchQuery(e.target.value);
+            setShowSearchDropdown(true);
+          }}
+          onFocus={() => {
+            if (searchQuery.trim().length > 0) setShowSearchDropdown(true);
+          }}
+          placeholder="Search case ID or patient..."
+          className="w-full bg-slate-50/90 dark:bg-slate-950/80 border border-slate-200/90 dark:border-slate-800 rounded-full pl-10 pr-4 py-2 text-xs text-slate-800 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500 focus:border-teal-500 transition-colors shadow-2xs"
         />
-        {searchQuery && (
-          <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xl py-1 text-xs z-50 max-h-48 overflow-y-auto">
+
+        {/* Live Filter Popover */}
+        {showSearchDropdown && searchQuery.trim().length > 0 && (
+          <div className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl py-1.5 text-xs z-50 max-h-60 overflow-y-auto">
             {filteredCases.length === 0 ? (
-              <div className="p-2 text-center text-slate-400 text-xs">No matching cases</div>
+              <div className="p-3 text-center text-slate-400 text-xs">
+                No matching research cases or patient records
+              </div>
             ) : (
               filteredCases.map((c) => (
                 <button
                   key={c.id}
                   onClick={() => {
                     onSelectCase(c.id);
+                    setShowSearchDropdown(false);
                     setSearchQuery('');
                   }}
-                  className="w-full px-3 py-1.5 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between"
+                  className="w-full px-4 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-800/80 flex items-center justify-between transition-colors border-b last:border-b-0 border-slate-100 dark:border-slate-800/60"
                 >
-                  <span className="font-mono text-slate-800 dark:text-slate-200">{c.id}</span>
-                  <span className="text-[11px] text-slate-400 truncate ml-2">{c.demographics.researchSubjectId}</span>
+                  <div>
+                    <div className="font-mono font-medium text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+                      <span>{c.id}</span>
+                      {activeCase?.id === c.id && (
+                        <span className="text-[10px] text-teal-600 dark:text-cyan-400 bg-teal-50 dark:bg-cyan-950/40 px-1.5 rounded-full">
+                          Active
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {c.name} · {c.demographics.indication}
+                    </div>
+                  </div>
+                  <span className="text-[11px] text-slate-400 font-mono capitalize">
+                    {c.demographics.affectedSide}
+                  </span>
                 </button>
               ))
             )}
@@ -136,124 +129,109 @@ export const TopBar: React.FC<TopBarProps> = ({
         )}
       </div>
 
-      {/* Active Case Selector + Real Backend Status + Theme Toggle */}
-      <div className="flex items-center gap-2.5 shrink-0 ml-auto">
-        {/* Active Case Selector Dropdown */}
-        <div className="relative">
-          <button
-            onClick={() => setShowCaseDropdown(!showCaseDropdown)}
-            className="flex items-center gap-2 px-2.5 py-1.5 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 rounded-md text-xs text-slate-800 dark:text-slate-200 transition-colors max-w-[210px]"
-          >
-            <FolderOpen className="w-3.5 h-3.5 text-teal-600 dark:text-cyan-400 shrink-0" />
-            <div className="truncate text-left font-mono text-[11px] leading-tight">
-              {activeCase ? activeCase.id : 'No Case Selected'}
-            </div>
-            <ChevronDown className="w-3 h-3 text-slate-400 dark:text-slate-500 shrink-0 ml-auto" />
-          </button>
-
-          {showCaseDropdown && (
-            <div className="absolute right-0 mt-1 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-md shadow-xl py-1 text-xs z-50">
-              <div className="px-3 py-1.5 text-[10px] uppercase font-mono text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
-                <span>Select Research Case</span>
-                <button
-                  onClick={() => {
-                    setShowCaseDropdown(false);
-                    onOpenCreateCaseModal();
-                  }}
-                  className="text-teal-600 dark:text-cyan-400 hover:underline flex items-center gap-0.5"
-                >
-                  <Plus className="w-3 h-3" />
-                  <span>New</span>
-                </button>
-              </div>
-
-              <div className="max-h-56 overflow-y-auto">
-                {cases.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => {
-                      onSelectCase(c.id);
-                      setShowCaseDropdown(false);
-                    }}
-                    className={`w-full text-left px-3 py-2 flex flex-col hover:bg-slate-50 dark:hover:bg-slate-800/80 transition-colors ${
-                      activeCase?.id === c.id
-                        ? 'bg-teal-50 dark:bg-cyan-500/10 text-teal-900 dark:text-cyan-300'
-                        : 'text-slate-700 dark:text-slate-300'
-                    }`}
-                  >
-                    <div className="font-mono text-[11px] font-semibold flex items-center justify-between">
-                      <span>{c.id}</span>
-                      {c.isDemo ? (
-                        <span className="text-[9px] text-amber-600 dark:text-amber-400 font-sans border border-amber-500/40 px-1 rounded">
-                          DEMO
-                        </span>
-                      ) : (
-                        <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-sans border border-emerald-500/40 px-1 rounded">
-                          SQLITE
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{c.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Real Backend Connection Status */}
-        <button
-          onClick={() => onRouteChange('settings')}
-          title={
-            backendHealth.status === 'connected'
-              ? `FastAPI Backend Online (${backendHealth.baseUrl})`
-              : `FastAPI Backend Unreachable: ${backendHealth.error || 'Server unreachable'}`
-          }
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-mono transition-colors border ${
-            backendHealth.status === 'connected'
-              ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-              : backendHealth.status === 'checking'
-              ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
-              : 'bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-900/50 hover:bg-rose-100'
-          }`}
-        >
-          <Server className="w-3.5 h-3.5" />
-          <span className="text-[11px]">
-            {backendHealth.status === 'connected'
-              ? backendHealth.baseUrl.includes('render.com')
-                ? 'FastAPI Online'
-                : 'FastAPI Local'
-              : backendHealth.status === 'checking'
-              ? 'Checking...'
-              : 'Backend Offline'}
-          </span>
-        </button>
-
-        {/* Working Light/Dark Theme Toggle */}
+      {/* Right Controls: Theme Toggle & Clinician Profile Badge */}
+      <div className="flex items-center gap-4 shrink-0">
+        {/* Exact Reference Theme Toggle Switch: Sun - Slider - Moon */}
         <button
           onClick={toggleTheme}
           aria-label={theme === 'dark' ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
           title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-          className="p-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-slate-100 dark:bg-slate-800/80 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-md border border-slate-200 dark:border-slate-700/60 transition-colors"
+          className="relative flex items-center gap-1.5 px-2 py-1 bg-amber-50 dark:bg-slate-800/90 border border-amber-200/70 dark:border-slate-700/80 rounded-full transition-colors cursor-pointer shadow-2xs hover:border-amber-300 dark:hover:border-slate-600"
         >
-          {theme === 'dark' ? (
-            <Sun className="w-4 h-4 text-amber-400" />
-          ) : (
-            <Moon className="w-4 h-4 text-slate-600" />
-          )}
+          <Sun className={`w-3.5 h-3.5 transition-colors ${theme === 'dark' ? 'text-slate-400' : 'text-amber-500'}`} />
+          <div className="relative w-8 h-4 bg-amber-200/60 dark:bg-slate-950 rounded-full transition-colors">
+            <div
+              className={`absolute top-0.5 w-3 h-3 rounded-full bg-white dark:bg-slate-200 shadow-xs transition-transform duration-200 ${
+                theme === 'dark' ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </div>
+          <Moon className={`w-3.5 h-3.5 transition-colors ${theme === 'dark' ? 'text-cyan-400' : 'text-slate-400'}`} />
         </button>
 
-        {/* Notifications Tray Icon */}
+        {/* Notifications Icon (quiet) */}
         <button
           onClick={onOpenNotifications}
-          className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors relative"
+          className="p-2 text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors relative"
           title="System Notifications & Event Log"
         >
           <Bell className="w-4 h-4" />
           {unreadNotificationsCount > 0 && (
-            <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-teal-500 dark:bg-cyan-400" />
+            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-teal-500 dark:bg-cyan-400" />
           )}
         </button>
+
+        {/* Clinician Profile Badge - Exactly matching Reference: DR Dr. Sharma / Orthopedic Surgeon */}
+        <div ref={profileRef} className="relative">
+          <button
+            onClick={() => setShowProfileMenu(!showProfileMenu)}
+            className="flex items-center gap-3 p-1.5 pr-2.5 rounded-full hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+          >
+            {/* Dark Navy Avatar Circle with "DR" */}
+            <div className="w-8 h-8 rounded-full bg-slate-900 dark:bg-slate-800 text-white border border-slate-800 dark:border-slate-700 flex items-center justify-center font-bold text-xs tracking-wider shadow-xs">
+              DR
+            </div>
+
+            {/* Clinician Name & Title */}
+            <div className="text-left hidden sm:block">
+              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 leading-tight">
+                Dr. Sharma
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
+                Orthopedic Surgeon
+              </div>
+            </div>
+
+            <ChevronDown className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+          </button>
+
+          {/* Profile Menu Dropdown */}
+          {showProfileMenu && (
+            <div className="absolute right-0 mt-2 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl py-2 text-xs z-50">
+              <div className="px-4 py-2 border-b border-slate-100 dark:border-slate-800">
+                <div className="font-semibold text-slate-900 dark:text-slate-100">Dr. Sharma, MD, FRCS</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">Department of Orthopedic Surgery</div>
+                <div className="text-[10px] text-teal-600 dark:text-cyan-400 mt-0.5">Shoulder & Elbow Reconstruction</div>
+              </div>
+
+              <div className="py-1">
+                <div className="px-4 py-1.5 text-[10px] font-mono uppercase tracking-wider text-slate-400">
+                  Active Case
+                </div>
+                <div className="px-4 py-1 text-slate-800 dark:text-slate-200 font-mono text-[11px] flex items-center justify-between">
+                  <span>{activeCase ? activeCase.id : 'No case loaded'}</span>
+                  {activeCase && <span className="text-[10px] text-teal-600 font-sans">Mounted</span>}
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 dark:border-slate-800 my-1" />
+
+              <div className="py-1">
+                <button
+                  onClick={() => {
+                    setShowProfileMenu(false);
+                    onOpenCreateCaseModal();
+                  }}
+                  className="w-full px-4 py-2 text-left text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center gap-2"
+                >
+                  <FolderOpen className="w-4 h-4 text-slate-400" />
+                  <span>Create New Research Case</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowProfileMenu(false);
+                    onRouteChange('settings');
+                  }}
+                  className="w-full px-4 py-2 text-left text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 flex items-center gap-2"
+                >
+                  <Settings className="w-4 h-4 text-slate-400" />
+                  <span>Developer & Storage Settings</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );

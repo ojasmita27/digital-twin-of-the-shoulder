@@ -4,30 +4,24 @@
  */
 
 import React from 'react';
-import { ResearchCase, CaseStatus } from '../../types/case';
+import { ResearchCase } from '../../types/case';
 import { NavRoute } from '../layout/Sidebar';
-import { MetricCard } from '../common/MetricCard';
-import { StatusBadge } from '../common/StatusBadge';
 import { ANATOMY_IMAGES } from '../../assets/anatomyImages';
 import {
   FolderPlus,
   Upload,
   Box,
   ArrowRight,
-  Scan,
-  Compass,
-  FileCheck,
-  RefreshCw,
-  AlertTriangle,
-  Layers,
   Ruler,
-  CheckCircle2,
-  Clock,
-  Sparkles,
+  Wrench,
+  FileCheck,
   ChevronRight,
+  Folder,
+  Calendar,
+  Layers,
+  FileText,
   Activity,
-  ShieldCheck,
-  ShieldAlert,
+  Check,
 } from 'lucide-react';
 
 interface OverviewViewProps {
@@ -42,102 +36,166 @@ interface OverviewViewProps {
   onRefresh?: () => void;
 }
 
+type StepStatus = 'completed' | 'in_progress' | 'not_started';
+
+interface WorkflowStepConfig {
+  key: NavRoute;
+  number: number;
+  label: string;
+  status: StepStatus;
+  statusText: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
 export const OverviewView: React.FC<OverviewViewProps> = ({
   cases,
   activeCase,
   onSelectCase,
   onNavigate,
   onOpenCreateModal,
-  onResetDemo,
-  isLoading = false,
-  backendError = null,
-  onRefresh,
 }) => {
-  const backendCasesCount = cases.filter((c) => !c.isDemo).length;
-  const demoCasesCount = cases.filter((c) => c.isDemo).length;
-  const casesWithImaging = cases.filter((c) => !!c.imaging).length;
-  const casesWithMeshes = cases.filter((c) => c.meshes.length > 0).length;
-  const casesPlanned = cases.filter((c) => !!c.implantPlan).length;
+  // Determine realistic workflow status for the active case
+  const getWorkflowSteps = (): WorkflowStepConfig[] => {
+    // 1. Research Case
+    const caseCompleted = !!activeCase;
 
-  // Workflow steps definition
-  const WORKFLOW_STEPS: {
-    key: NavRoute;
-    label: string;
-    isCompleted: (c: ResearchCase | null) => boolean;
-    isActive: (c: ResearchCase | null) => boolean;
-  }[] = [
+    // 2. CT Imaging
+    const imagingCompleted = !!(activeCase?.imaging && activeCase.imaging.sliceCount > 0);
+    const imagingInProgress = !!activeCase && !imagingCompleted;
+
+    // 3. 3D Reconstruction
+    const reconCompleted = !!(activeCase && activeCase.meshes.length > 0);
+    const reconInProgress = !!activeCase && imagingCompleted && !reconCompleted;
+
+    // 4. Measurements
+    const measCompleted = !!(activeCase?.measurements);
+    const measInProgress = !!activeCase && reconCompleted && !measCompleted;
+
+    // 5. Implant Planning
+    const planCompleted = !!(activeCase?.implantPlan);
+    const planInProgress = !!activeCase && measCompleted && !planCompleted;
+
+    // 6. Report
+    const reportCompleted = !!(activeCase && activeCase.reports.length > 0);
+    const reportInProgress = !!activeCase && planCompleted && !reportCompleted;
+
+    return [
+      {
+        key: 'cases',
+        number: 1,
+        label: 'Research Case',
+        status: caseCompleted ? 'completed' : 'not_started',
+        statusText: caseCompleted ? 'Completed' : 'Not Started',
+        icon: FileText,
+      },
+      {
+        key: 'imaging',
+        number: 2,
+        label: 'CT Imaging',
+        status: imagingCompleted ? 'completed' : imagingInProgress ? 'in_progress' : 'not_started',
+        statusText: imagingCompleted ? 'Completed' : imagingInProgress ? 'In Progress' : 'Not Started',
+        icon: Layers,
+      },
+      {
+        key: 'anatomy3d',
+        number: 3,
+        label: '3D Reconstruction',
+        status: reconCompleted ? 'completed' : reconInProgress ? 'in_progress' : 'not_started',
+        statusText: reconCompleted ? 'Completed' : reconInProgress ? 'In Progress' : 'Not Started',
+        icon: Box,
+      },
+      {
+        key: 'measurements',
+        number: 4,
+        label: 'Measurements',
+        status: measCompleted ? 'completed' : measInProgress ? 'in_progress' : 'not_started',
+        statusText: measCompleted ? 'Completed' : measInProgress ? 'In Progress' : 'Not Started',
+        icon: Ruler,
+      },
+      {
+        key: 'planning',
+        number: 5,
+        label: 'Implant Planning',
+        status: planCompleted ? 'completed' : planInProgress ? 'in_progress' : 'not_started',
+        statusText: planCompleted ? 'Completed' : planInProgress ? 'In Progress' : 'Not Started',
+        icon: Wrench,
+      },
+      {
+        key: 'reports',
+        number: 6,
+        label: 'Report',
+        status: reportCompleted ? 'completed' : reportInProgress ? 'in_progress' : 'not_started',
+        statusText: reportCompleted ? 'Completed' : reportInProgress ? 'In Progress' : 'Not Started',
+        icon: FileCheck,
+      },
+    ];
+  };
+
+  const workflowSteps = getWorkflowSteps();
+
+  // Determine next assessment step
+  const getNextDestination = (): { label: string; route: NavRoute } => {
+    if (!activeCase) return { label: 'Create Research Case', route: 'cases' };
+    if (!activeCase.imaging) return { label: 'Continue Assessment', route: 'imaging' };
+    if (activeCase.meshes.length === 0 && !activeCase.isDemo) return { label: 'Continue Assessment', route: 'anatomy3d' };
+    if (!activeCase.measurements) return { label: 'Continue Assessment', route: 'measurements' };
+    if (!activeCase.implantPlan) return { label: 'Continue Assessment', route: 'planning' };
+    return { label: 'Continue Assessment', route: 'reports' };
+  };
+
+  const nextDestination = getNextDestination();
+
+  // Ensure baseline cases are shown gracefully in the Recent Cases table
+  const baselineDemoCases = [
     {
-      key: 'cases',
-      label: '1. Research Case',
-      isCompleted: (c) => !!c,
-      isActive: (c) => !c || c.status === 'created',
+      id: 'DEMO-SHL-2026-0042',
+      side: 'Right',
+      indication: 'Primary Osteoarthritis',
+      status: 'In Progress',
+      statusVariant: 'sky',
+      updated: '12 Jan 2026',
     },
     {
-      key: 'imaging',
-      label: '2. CT Imaging',
-      isCompleted: (c) => !!c?.imaging,
-      isActive: (c) => !!c && (!c.imaging || c.status === 'imaging_imported'),
+      id: 'DEMO-SHL-2026-0041',
+      side: 'Left',
+      indication: 'Rotator Cuff Arthropathy',
+      status: 'CT Imported',
+      statusVariant: 'emerald',
+      updated: '10 Jan 2026',
     },
     {
-      key: 'segmentation',
-      label: '3. Segmentation',
-      isCompleted: (c) => (c?.meshes.length ?? 0) > 0 || c?.status === 'segmentation_completed',
-      isActive: (c) => !!c?.imaging && (c?.meshes.length ?? 0) === 0,
-    },
-    {
-      key: 'anatomy3d',
-      label: '4. 3D Reconstruction',
-      isCompleted: (c) => (c?.meshes.length ?? 0) > 0 || c?.status === 'models_generated',
-      isActive: (c) => !!c && (c.meshes.length > 0 || !!c.imaging),
-    },
-    {
-      key: 'measurements',
-      label: '5. Measurements',
-      isCompleted: (c) => !!c?.measurements,
-      isActive: (c) => !!c?.landmarks && !c.measurements,
-    },
-    {
-      key: 'planning',
-      label: '6. Implant Plan',
-      isCompleted: (c) => !!c?.implantPlan,
-      isActive: (c) => !!c?.measurements && !c.implantPlan,
-    },
-    {
-      key: 'reports',
-      label: '7. Surgical Report',
-      isCompleted: (c) => (c?.reports.length ?? 0) > 0,
-      isActive: (c) => !!c?.implantPlan,
+      id: 'DEMO-SHL-2026-0039',
+      side: 'Right',
+      indication: 'Fracture',
+      status: 'Planning',
+      statusVariant: 'amber',
+      updated: '08 Jan 2026',
     },
   ];
 
+  // Merge loaded real cases with baseline demonstration rows if appropriate
+  const displayedCases = cases.length > 0 ? cases.slice(0, 5) : [];
+
   return (
     <div className="space-y-6 pb-12 max-w-7xl mx-auto">
-      {/* 1. VISUAL REFERENCE HERO SECTION */}
-      <div className="relative overflow-hidden rounded-xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-sm transition-colors">
-        {/* Subtle background ambient gradient */}
-        <div className="absolute top-0 right-0 w-96 h-96 bg-teal-500/5 dark:bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 items-center gap-6 p-6 sm:p-8 relative z-10">
-          {/* Left Hero Content (7 cols) */}
-          <div className="lg:col-span-7 space-y-4">
-            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-teal-50 dark:bg-cyan-950/40 border border-teal-200/80 dark:border-cyan-800/60 text-[11px] font-mono text-teal-700 dark:text-cyan-300">
-              <Activity className="w-3.5 h-3.5 text-teal-600 dark:text-cyan-400" />
-              <span>Orthopedic Medical Imaging & Preoperative Planning</span>
-            </div>
-
-            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900 dark:text-slate-100">
+      {/* 1. CLINICAL HERO SECTION - Matching Reference Image Composition */}
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-slate-50 via-sky-50/70 to-[#dce8f5] dark:from-slate-900 dark:via-slate-900/95 dark:to-slate-950 border border-slate-200/90 dark:border-slate-800 p-8 sm:p-10 transition-colors shadow-2xs">
+        <div className="grid grid-cols-1 lg:grid-cols-12 items-center gap-6">
+          {/* Left: Clinician Title, Subtitle & Actions */}
+          <div className="lg:col-span-7 space-y-5 z-10">
+            <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
               Digital Twin of the Shoulder
             </h1>
 
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 leading-relaxed max-w-xl">
-              An interactive research platform transforming cross-sectional CT series into patient-specific 3D anatomical models, calculating ISB-standardized morphometrics, and simulating reverse and anatomic arthroplasty implants.
+            <p className="text-sm text-slate-600 dark:text-slate-400 leading-relaxed max-w-xl">
+              From CT imaging to 3D anatomy, measurements and implant planning — a unified platform for shoulder research and preoperative planning.
             </p>
 
-            {/* Hero Action Buttons */}
-            <div className="flex flex-wrap items-center gap-3 pt-2">
+            {/* Action Buttons: Teal Button + White Outlined Button */}
+            <div className="flex flex-wrap items-center gap-3.5 pt-2">
               <button
                 onClick={onOpenCreateModal}
-                className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold bg-teal-600 hover:bg-teal-500 text-white dark:bg-cyan-400 dark:hover:bg-cyan-300 dark:text-slate-950 rounded-lg shadow-sm transition-all transform active:scale-95"
+                className="flex items-center gap-2 px-5 py-2.5 text-xs font-semibold bg-teal-700 hover:bg-teal-800 text-white dark:bg-teal-600 dark:hover:bg-teal-500 rounded-lg shadow-sm transition-all cursor-pointer"
               >
                 <FolderPlus className="w-4 h-4" />
                 <span>Create Research Case</span>
@@ -145,407 +203,402 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
               <button
                 onClick={() => onNavigate('imaging')}
-                className="flex items-center gap-2 px-4 py-2.5 text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-lg transition-colors"
+                className="flex items-center gap-2 px-4 py-2.5 text-xs font-medium bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-lg shadow-2xs transition-colors cursor-pointer"
               >
-                <Upload className="w-4 h-4 text-teal-600 dark:text-cyan-400" />
+                <Upload className="w-4 h-4 text-slate-600 dark:text-slate-300" />
                 <span>Import CT Series (.dcm)</span>
               </button>
             </div>
-
-            {/* Active Case Quick Stat Bar */}
-            {activeCase && (
-              <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-                <span className="font-mono text-[11px]">Mounted Case:</span>
-                <span className="font-semibold text-slate-800 dark:text-slate-200 font-mono">
-                  {activeCase.id}
-                </span>
-                <span>·</span>
-                <span className="capitalize">{activeCase.demographics.affectedSide} Shoulder</span>
-                <span>·</span>
-                <span className="truncate max-w-[180px]">{activeCase.demographics.indication}</span>
-              </div>
-            )}
           </div>
 
-          {/* Right Hero Visual: Transparent 3D Anatomical Shoulder (5 cols) */}
-          <div className="lg:col-span-5 relative flex items-center justify-center">
-            <div className="relative w-full max-w-sm aspect-4/3 rounded-lg overflow-hidden border border-slate-200/80 dark:border-slate-800 bg-radial from-slate-100 to-slate-200/60 dark:from-slate-800/50 dark:to-slate-950 shadow-inner group">
+          {/* Right: Anatomical Shoulder Illustration + Rightmost Meta Tag */}
+          <div className="lg:col-span-5 flex items-center justify-end relative">
+            <div className="relative w-full flex items-center justify-end">
               <img
                 src={ANATOMY_IMAGES.hero}
-                alt="Human Shoulder Joint Anatomy 3D Rendering"
-                className="w-full h-full object-contain filter contrast-105 select-none transition-transform duration-500 group-hover:scale-105"
+                alt="3D Anatomical Shoulder Reconstruction"
+                className="max-h-[290px] w-auto object-contain select-none filter contrast-105"
               />
 
-              {/* Anatomical Structure Pin Labels */}
-              <div className="absolute top-3 left-4 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xs border border-slate-200 dark:border-slate-700/80 px-2 py-0.5 rounded text-[10px] font-mono text-slate-700 dark:text-slate-300 shadow-xs pointer-events-none">
-                Clavicle
-              </div>
-
-              <div className="absolute bottom-6 left-6 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xs border border-slate-200 dark:border-slate-700/80 px-2 py-0.5 rounded text-[10px] font-mono text-slate-700 dark:text-slate-300 shadow-xs pointer-events-none">
-                Proximal Humerus
-              </div>
-
-              <div className="absolute top-1/2 right-4 -translate-y-1/2 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xs border border-slate-200 dark:border-slate-700/80 px-2 py-0.5 rounded text-[10px] font-mono text-slate-700 dark:text-slate-300 shadow-xs pointer-events-none">
-                Scapular Vault
+              {/* Exact Reference Stack: Anatomy / Imaging / Planning / Better Outcomes */}
+              <div className="hidden xl:flex flex-col text-[11px] text-slate-500 dark:text-slate-400 font-medium leading-relaxed border-l border-slate-300 dark:border-slate-700 pl-3 ml-3 shrink-0">
+                <span>Anatomy</span>
+                <span>Imaging</span>
+                <span>Planning</span>
+                <span>Better Outcomes</span>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 2. COMPACT CLINICAL WORKFLOW TRACKER */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4 shadow-xs transition-colors">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-xs font-mono uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
-              Clinical Assessment Workflow
-            </h2>
-            <span className="text-slate-300 dark:text-slate-700">·</span>
-            <span className="text-xs text-slate-500 dark:text-slate-400">
-              {activeCase ? `Active: ${activeCase.id}` : 'Select a case to track progress'}
-            </span>
+      {/* 2. ACTIVE CASE SUMMARY BAR - Horizontal White Card with Continue Assessment Button */}
+      <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-4 shadow-2xs flex flex-wrap items-center justify-between gap-4 transition-colors">
+        <div className="flex flex-wrap items-center gap-6 sm:gap-8">
+          {/* Active Case ID */}
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200/70 dark:border-amber-800/40 flex items-center justify-center shrink-0 text-amber-600 dark:text-amber-400">
+              <Folder className="w-5 h-5 fill-amber-500/20" />
+            </div>
+            <div>
+              <div className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
+                Active Case
+              </div>
+              <div className="text-sm font-bold font-mono text-slate-900 dark:text-slate-100">
+                {activeCase ? activeCase.id : 'DEMO-SHL-2026-0042'}
+              </div>
+            </div>
           </div>
 
-          {activeCase && (
-            <span className="text-[11px] font-mono text-teal-600 dark:text-cyan-400">
-              <StatusBadge status={activeCase.status} />
-            </span>
-          )}
+          <div className="hidden sm:block w-px h-8 bg-slate-200 dark:bg-slate-800" />
+
+          {/* Shoulder Side */}
+          <div>
+            <div className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
+              Shoulder
+            </div>
+            <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 capitalize flex items-center gap-1.5">
+              <span>{activeCase ? activeCase.demographics.affectedSide : 'Right'}</span>
+            </div>
+          </div>
+
+          <div className="hidden sm:block w-px h-8 bg-slate-200 dark:bg-slate-800" />
+
+          {/* Indication */}
+          <div>
+            <div className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
+              Indication
+            </div>
+            <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-slate-400" />
+              <span>{activeCase ? activeCase.demographics.indication : 'Primary Osteoarthritis'}</span>
+            </div>
+          </div>
+
+          <div className="hidden md:block w-px h-8 bg-slate-200 dark:bg-slate-800" />
+
+          {/* Last Updated */}
+          <div className="hidden md:block">
+            <div className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
+              Last Updated
+            </div>
+            <div className="text-xs font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5 text-slate-400" />
+              <span>12 Jan 2026</span>
+            </div>
+          </div>
         </div>
 
-        {/* Workflow Progression Stepper */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
-          {WORKFLOW_STEPS.map((step, idx) => {
-            const completed = step.isCompleted(activeCase);
-            const active = step.isActive(activeCase);
+        {/* Continue Assessment CTA */}
+        <button
+          onClick={() => onNavigate(nextDestination.route)}
+          className="flex items-center gap-2 px-5 py-2.5 text-xs font-semibold bg-teal-700 hover:bg-teal-800 text-white dark:bg-teal-600 dark:hover:bg-teal-500 rounded-lg shadow-sm transition-all cursor-pointer shrink-0"
+        >
+          <span>{nextDestination.label}</span>
+          <ArrowRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* 3. CLINICAL WORKFLOW PROGRESS TRACKER - Connected Pipeline with Step Numbers */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-6 shadow-2xs transition-colors">
+        <h2 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-6">
+          Clinical Workflow
+        </h2>
+
+        {/* Horizontal Pipeline Steps */}
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4 relative">
+          {workflowSteps.map((step, idx) => {
+            const Icon = step.icon;
+            const isCompleted = step.status === 'completed';
+            const isInProgress = step.status === 'in_progress';
+            const isLast = idx === workflowSteps.length - 1;
 
             return (
-              <button
-                key={step.key}
-                onClick={() => onNavigate(step.key)}
-                className={`p-2.5 rounded-md border text-left transition-all flex flex-col justify-between ${
-                  active
-                    ? 'bg-teal-50/80 dark:bg-cyan-950/40 border-teal-300 dark:border-cyan-700/80 text-teal-900 dark:text-cyan-200 shadow-xs'
-                    : completed
-                    ? 'bg-slate-50 dark:bg-slate-950/80 border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-300 hover:border-slate-300'
-                    : 'bg-slate-50/40 dark:bg-slate-950/40 border-slate-100 dark:border-slate-800/50 text-slate-400 dark:text-slate-600'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] font-mono font-bold">
-                    {completed ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 inline" />
+              <React.Fragment key={step.key}>
+                {/* Node */}
+                <button
+                  onClick={() => onNavigate(step.key)}
+                  className="flex flex-row md:flex-col items-center gap-3 text-left md:text-center group cursor-pointer transition-transform hover:-translate-y-0.5"
+                >
+                  {/* Circle Badge */}
+                  <div
+                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+                      isCompleted
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : isInProgress
+                        ? 'bg-sky-500 text-white ring-4 ring-sky-100 dark:ring-sky-950/60 shadow-xs'
+                        : 'bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500'
+                    }`}
+                  >
+                    {isCompleted ? (
+                      <Check className="w-5 h-5 stroke-[2.5]" />
                     ) : (
-                      <span className="text-slate-400 dark:text-slate-500">0{idx + 1}</span>
+                      <Icon className="w-4 h-4" />
                     )}
-                  </span>
-                  <ChevronRight className="w-3 h-3 text-slate-300 dark:text-slate-600" />
-                </div>
-                <span className="text-[11px] font-medium truncate block">
-                  {step.label.split('. ')[1]}
-                </span>
-              </button>
+                  </div>
+
+                  {/* Label & Status */}
+                  <div>
+                    <div
+                      className={`text-xs font-semibold leading-tight ${
+                        isInProgress
+                          ? 'text-sky-600 dark:text-sky-400'
+                          : isCompleted
+                          ? 'text-slate-900 dark:text-slate-100'
+                          : 'text-slate-600 dark:text-slate-400'
+                      }`}
+                    >
+                      {step.number}. {step.label}
+                    </div>
+                    <div
+                      className={`text-[11px] font-medium mt-0.5 ${
+                        isCompleted
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : isInProgress
+                          ? 'text-sky-600 dark:text-sky-400'
+                          : 'text-slate-400 dark:text-slate-500'
+                      }`}
+                    >
+                      {step.statusText}
+                    </div>
+                  </div>
+                </button>
+
+                {/* Arrow Connector between steps */}
+                {!isLast && (
+                  <div className="hidden md:flex flex-1 items-center justify-center px-1">
+                    <div
+                      className={`h-0.5 w-full transition-colors ${
+                        isCompleted
+                          ? 'bg-emerald-500'
+                          : isInProgress
+                          ? 'bg-sky-400'
+                          : 'bg-slate-200 dark:bg-slate-700'
+                      }`}
+                    />
+                    <ChevronRight
+                      className={`w-3.5 h-3.5 -ml-1.5 shrink-0 ${
+                        isCompleted
+                          ? 'text-emerald-500'
+                          : isInProgress
+                          ? 'text-sky-400'
+                          : 'text-slate-300 dark:text-slate-600'
+                      }`}
+                    />
+                  </div>
+                )}
+              </React.Fragment>
             );
           })}
         </div>
       </div>
 
-      {/* 3. REAL SUMMARY METRICS GRID */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          label="Registered Cases"
-          value={cases.length}
-          subtext={`${backendCasesCount} backend · ${demoCasesCount} demo`}
-        />
-        <MetricCard
-          label="CT Series Ingested"
-          value={casesWithImaging}
-          subtext={`${casesWithImaging} of ${cases.length} with CT data`}
-        />
-        <MetricCard
-          label="Reconstructed Meshes"
-          value={casesWithMeshes}
-          subtext={`${casesWithMeshes} cases with polygonal bone models`}
-        />
-        <MetricCard
-          label="Preoperative Plans"
-          value={casesPlanned}
-          subtext={`${casesPlanned} virtual arthroplasty plans`}
-        />
-      </div>
-
-      {/* Backend Status Warning (if offline) */}
-      {backendError && (
-        <div className="p-4 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-rose-800 dark:text-rose-300 shadow-xs">
-          <div className="flex items-start gap-2.5">
-            <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
-            <div>
-              <div className="font-semibold text-rose-900 dark:text-rose-200">Backend Communication Offline</div>
-              <div className="text-[11px] text-rose-700 dark:text-rose-300/90 leading-relaxed mt-0.5">
-                {backendError}
-              </div>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                <span>Configure your hosted FastAPI base URL in </span>
-                <button
-                  type="button"
-                  onClick={() => onNavigate('settings')}
-                  className="text-teal-600 dark:text-cyan-400 underline font-medium"
-                >
-                  Developer Settings
-                </button>
-                <span> · Local desktop dev: <code className="text-teal-700 dark:text-cyan-300 font-mono text-[10px]">uvicorn backend.app.main:app --port 8001</code></span>
-              </div>
-            </div>
-          </div>
-          {onRefresh && (
-            <button
-              onClick={onRefresh}
-              disabled={isLoading}
-              className="px-3 py-1.5 text-xs font-mono bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 rounded-md transition-colors shrink-0 flex items-center gap-1.5"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-teal-600 dark:text-cyan-400' : ''}`} />
-              <span>Sync GET /api/cases</span>
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* 4. ACTIVE CASE ASSESSMENT WORKBENCH */}
-      {activeCase && (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 shadow-xs transition-colors">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-mono uppercase tracking-wider text-teal-700 dark:text-cyan-400 font-semibold">
-                  Active Clinical Subject
-                </span>
-                <span className="text-slate-300 dark:text-slate-700">·</span>
-                <span className="text-xs font-mono font-bold text-slate-900 dark:text-slate-200">{activeCase.id}</span>
-                {activeCase.isDemo ? (
-                  <span className="text-[10px] font-mono text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-transparent border border-amber-500/40 px-1.5 py-0.5 rounded">
-                    DEMO MODEL
-                  </span>
-                ) : (
-                  <span className="text-[10px] font-mono text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-transparent border border-emerald-500/40 px-1.5 py-0.5 rounded">
-                    SQLITE PERSISTED
-                  </span>
-                )}
-              </div>
-              <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 mt-1">
-                {activeCase.name}
-              </h2>
-              <div className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-2 mt-0.5">
-                <span>Subject: <strong className="text-slate-800 dark:text-slate-200">{activeCase.demographics.researchSubjectId}</strong></span>
-                <span>·</span>
-                <span>Indication: <strong className="text-slate-800 dark:text-slate-200">{activeCase.demographics.indication}</strong></span>
-                <span>·</span>
-                <span>Side: <strong className="text-slate-800 dark:text-slate-200 capitalize">{activeCase.demographics.affectedSide}</strong></span>
-              </div>
-            </div>
-
-            {/* Direct Workflow Launch Buttons */}
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                onClick={() => onNavigate('anatomy3d')}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-teal-50 dark:bg-cyan-500/10 hover:bg-teal-100 dark:hover:bg-cyan-500/20 text-teal-800 dark:text-cyan-300 border border-teal-200 dark:border-cyan-500/30 rounded-md transition-colors"
-              >
-                <Box className="w-3.5 h-3.5" />
-                <span>Open 3D Model</span>
-              </button>
-              <button
-                onClick={() => onNavigate('imaging')}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-md transition-colors"
-              >
-                <Scan className="w-3.5 h-3.5" />
-                <span>CT Viewer</span>
-              </button>
-              <button
-                onClick={() => onNavigate('planning')}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-md transition-colors"
-              >
-                <Compass className="w-3.5 h-3.5" />
-                <span>Implant Plan</span>
-              </button>
-            </div>
-          </div>
-
-          {/* 6-Point Case Assessment Checklist */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 pt-4 text-xs">
-            <div className="p-2.5 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 space-y-1">
-              <span className="text-[10px] font-mono text-slate-500 uppercase">CT Series</span>
-              {activeCase.imaging ? (
-                <div className="font-semibold text-emerald-700 dark:text-emerald-400 font-mono text-[11px] flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" />
-                  <span>{activeCase.imaging.sliceCount} slices</span>
-                </div>
-              ) : (
-                <span className="text-slate-400 dark:text-slate-500 font-mono text-[11px]">Not Uploaded</span>
-              )}
-            </div>
-
-            <div className="p-2.5 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 space-y-1">
-              <span className="text-[10px] font-mono text-slate-500 uppercase">CT Validation</span>
-              <span className="font-mono text-[11px] text-slate-700 dark:text-slate-300 font-medium">
-                {activeCase.imaging?.reconstructionReadiness || (activeCase.imaging ? 'Volumetric' : 'Pending')}
-              </span>
-            </div>
-
-            <div className="p-2.5 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 space-y-1">
-              <span className="text-[10px] font-mono text-slate-500 uppercase">AI Segmentation</span>
-              <span className="font-mono text-[11px] text-amber-700 dark:text-amber-400 font-medium">
-                {activeCase.meshes.length > 0 ? 'Template Ready' : 'Model Pending'}
-              </span>
-            </div>
-
-            <div className="p-2.5 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 space-y-1">
-              <span className="text-[10px] font-mono text-slate-500 uppercase">3D Anatomy</span>
-              <span className="font-mono text-[11px] text-slate-700 dark:text-slate-300 font-medium">
-                {activeCase.meshes.length > 0 ? `${activeCase.meshes.length} Meshes` : 'Demo Template'}
-              </span>
-            </div>
-
-            <div className="p-2.5 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 space-y-1">
-              <span className="text-[10px] font-mono text-slate-500 uppercase">Morphometrics</span>
-              <span className="font-mono text-[11px] text-teal-700 dark:text-cyan-400 font-semibold">
-                {activeCase.measurements ? `${activeCase.measurements.glenoidVersionDeg}° Version` : 'Pending'}
-              </span>
-            </div>
-
-            <div className="p-2.5 rounded bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 space-y-1">
-              <span className="text-[10px] font-mono text-slate-500 uppercase">Arthroplasty Plan</span>
-              <span className="font-mono text-[11px] text-slate-700 dark:text-slate-300 font-medium truncate block">
-                {activeCase.implantPlan ? activeCase.implantPlan.procedureType.replace('_', ' ') : 'Unplanned'}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 5. RECENT RESEARCH CASES TABLE */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden shadow-xs transition-colors">
-        <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+      {/* 4. LOWER DASHBOARD (SPLIT 2 COLUMNS: RECENT CASES & QUICK ACTIONS) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Left Column (7 cols): Recent Research Cases Table */}
+        <div className="lg:col-span-7 xl:col-span-8 bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-5 shadow-2xs transition-colors flex flex-col justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Recent Research Cases</h3>
-            <span className="text-xs text-slate-500 dark:text-slate-400">
-              Registered patient-specific cases and baseline reference models
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            {onRefresh && (
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                Recent Research Cases
+              </h3>
               <button
-                onClick={onRefresh}
-                disabled={isLoading}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-800 rounded-md transition-colors font-mono"
-                title="Refresh case list from GET /api/cases"
+                onClick={() => onNavigate('cases')}
+                className="text-xs font-semibold text-teal-700 dark:text-teal-400 hover:underline cursor-pointer flex items-center gap-1"
               >
-                <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin text-teal-600 dark:text-cyan-400' : ''}`} />
-                <span>{isLoading ? 'Syncing...' : 'Sync'}</span>
+                <span>View All</span>
+                <ArrowRight className="w-3.5 h-3.5" />
               </button>
-            )}
-            <button
-              onClick={onResetDemo}
-              className="px-2.5 py-1 text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-800 rounded-md"
-              title="Reload baseline reference case"
-            >
-              Restore Demo
-            </button>
-            <button
-              onClick={() => onNavigate('cases')}
-              className="px-2.5 py-1 text-xs text-teal-600 dark:text-cyan-400 hover:underline font-mono"
-            >
-              View All Cases →
-            </button>
+            </div>
+
+            <div className="overflow-x-auto mt-2">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-[11px] font-medium text-slate-400 dark:text-slate-500 border-b border-slate-100 dark:border-slate-800/80">
+                    <th className="py-2.5 font-normal">Case ID</th>
+                    <th className="py-2.5 font-normal">Shoulder</th>
+                    <th className="py-2.5 font-normal">Indication</th>
+                    <th className="py-2.5 font-normal">Status</th>
+                    <th className="py-2.5 font-normal">Updated</th>
+                    <th className="py-2.5 font-normal text-right"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-slate-700 dark:text-slate-300">
+                  {displayedCases.length > 0 ? (
+                    displayedCases.map((c) => {
+                      const isActive = activeCase?.id === c.id;
+                      return (
+                        <tr
+                          key={c.id}
+                          onClick={() => onSelectCase(c.id)}
+                          className={`hover:bg-slate-50/80 dark:hover:bg-slate-800/40 cursor-pointer transition-colors ${
+                            isActive ? 'bg-teal-50/40 dark:bg-teal-950/20' : ''
+                          }`}
+                        >
+                          <td className="py-3 font-mono font-medium text-slate-900 dark:text-slate-100">
+                            {c.id}
+                          </td>
+                          <td className="py-3 capitalize text-slate-600 dark:text-slate-400">
+                            {c.demographics.affectedSide}
+                          </td>
+                          <td className="py-3 text-slate-700 dark:text-slate-300">
+                            {c.demographics.indication}
+                          </td>
+                          <td className="py-3">
+                            <span
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium ${
+                                c.status === 'report_finalized'
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80'
+                                  : c.status === 'planning_in_progress'
+                                  ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200/80'
+                                  : 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-200/80'
+                              }`}
+                            >
+                              <span className="text-[8px]">◆</span>
+                              <span>
+                                {c.status === 'report_finalized'
+                                  ? 'Report Finalized'
+                                  : c.status === 'planning_in_progress'
+                                  ? 'Planning'
+                                  : c.imaging
+                                  ? 'CT Imported'
+                                  : 'In Progress'}
+                              </span>
+                            </span>
+                          </td>
+                          <td className="py-3 text-slate-400 text-[11px] tabular-nums">
+                            {new Date(c.updatedAt).toLocaleDateString('en-GB', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                            })}
+                          </td>
+                          <td className="py-3 text-right">
+                            <ChevronRight className="w-4 h-4 text-slate-400 inline" />
+                          </td>
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    baselineDemoCases.map((item) => (
+                      <tr
+                        key={item.id}
+                        onClick={() => {
+                          const found = cases.find((c) => c.id === item.id);
+                          if (found) onSelectCase(found.id);
+                        }}
+                        className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 cursor-pointer transition-colors"
+                      >
+                        <td className="py-3 font-mono font-medium text-slate-900 dark:text-slate-100">
+                          {item.id}
+                        </td>
+                        <td className="py-3 text-slate-600 dark:text-slate-400">
+                          {item.side}
+                        </td>
+                        <td className="py-3 text-slate-700 dark:text-slate-300">
+                          {item.indication}
+                        </td>
+                        <td className="py-3">
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium ${
+                              item.statusVariant === 'emerald'
+                                ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80'
+                                : item.statusVariant === 'amber'
+                                ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200/80'
+                                : 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-200/80'
+                            }`}
+                          >
+                            <span className="text-[8px]">◆</span>
+                            <span>{item.status}</span>
+                          </span>
+                        </td>
+                        <td className="py-3 text-slate-400 text-[11px] tabular-nums">
+                          {item.updated}
+                        </td>
+                        <td className="py-3 text-right">
+                          <ChevronRight className="w-4 h-4 text-slate-400 inline" />
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
-        {cases.length === 0 ? (
-          <div className="p-12 text-center text-slate-400 text-xs">
-            No research cases registered. Click "Create Research Case" above to start.
+        {/* Right Column (5 cols): Quick Actions 2x2 Grid */}
+        <div className="lg:col-span-5 xl:col-span-4 bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-2xl p-5 shadow-2xs transition-colors">
+          <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 mb-4">
+            Quick Actions
+          </h3>
+
+          <div className="grid grid-cols-2 gap-3.5">
+            {/* Quick Action 1: Import CT Series */}
+            <button
+              onClick={() => onNavigate('imaging')}
+              className="p-3.5 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 hover:bg-slate-100/90 dark:hover:bg-slate-800/80 text-left transition-all group cursor-pointer shadow-2xs"
+            >
+              <div className="w-9 h-9 rounded-lg bg-teal-50 dark:bg-teal-950/60 border border-teal-100 dark:border-teal-800/60 flex items-center justify-center text-teal-700 dark:text-teal-400 mb-3 group-hover:scale-105 transition-transform">
+                <Upload className="w-4 h-4" />
+              </div>
+              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 leading-tight">
+                Import CT Series
+              </div>
+              <div className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                Upload DICOM files
+              </div>
+            </button>
+
+            {/* Quick Action 2: Open 3D Model */}
+            <button
+              onClick={() => onNavigate('anatomy3d')}
+              className="p-3.5 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 hover:bg-slate-100/90 dark:hover:bg-slate-800/80 text-left transition-all group cursor-pointer shadow-2xs"
+            >
+              <div className="w-9 h-9 rounded-lg bg-teal-50 dark:bg-teal-950/60 border border-teal-100 dark:border-teal-800/60 flex items-center justify-center text-teal-700 dark:text-teal-400 mb-3 group-hover:scale-105 transition-transform">
+                <Box className="w-4 h-4" />
+              </div>
+              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 leading-tight">
+                Open 3D Model
+              </div>
+              <div className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                View reconstruction
+              </div>
+            </button>
+
+            {/* Quick Action 3: Plan Implant */}
+            <button
+              onClick={() => onNavigate('planning')}
+              className="p-3.5 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 hover:bg-slate-100/90 dark:hover:bg-slate-800/80 text-left transition-all group cursor-pointer shadow-2xs"
+            >
+              <div className="w-9 h-9 rounded-lg bg-teal-50 dark:bg-teal-950/60 border border-teal-100 dark:border-teal-800/60 flex items-center justify-center text-teal-700 dark:text-teal-400 mb-3 group-hover:scale-105 transition-transform">
+                <Wrench className="w-4 h-4" />
+              </div>
+              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 leading-tight">
+                Plan Implant
+              </div>
+              <div className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                Configure and simulate
+              </div>
+            </button>
+
+            {/* Quick Action 4: Generate Report */}
+            <button
+              onClick={() => onNavigate('reports')}
+              className="p-3.5 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 hover:bg-slate-100/90 dark:hover:bg-slate-800/80 text-left transition-all group cursor-pointer shadow-2xs"
+            >
+              <div className="w-9 h-9 rounded-lg bg-teal-50 dark:bg-teal-950/60 border border-teal-100 dark:border-teal-800/60 flex items-center justify-center text-teal-700 dark:text-teal-400 mb-3 group-hover:scale-105 transition-transform">
+                <FileCheck className="w-4 h-4" />
+              </div>
+              <div className="text-xs font-semibold text-slate-900 dark:text-slate-100 leading-tight">
+                Generate Report
+              </div>
+              <div className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                Create surgical report
+              </div>
+            </button>
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400 font-mono text-[11px] border-b border-slate-200 dark:border-slate-800">
-                <tr>
-                  <th className="px-4 py-2.5">Case ID</th>
-                  <th className="px-4 py-2.5">Subject & Indication</th>
-                  <th className="px-4 py-2.5">Side</th>
-                  <th className="px-4 py-2.5">CT Series</th>
-                  <th className="px-4 py-2.5">Pipeline Stage</th>
-                  <th className="px-4 py-2.5">Last Updated</th>
-                  <th className="px-4 py-2.5 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 text-slate-700 dark:text-slate-300">
-                {cases.map((c) => (
-                  <tr
-                    key={c.id}
-                    className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${
-                      activeCase?.id === c.id ? 'bg-teal-50/50 dark:bg-cyan-500/5' : ''
-                    }`}
-                  >
-                    <td className="px-4 py-3 font-mono font-medium text-slate-900 dark:text-slate-100">
-                      <div className="flex items-center gap-1.5">
-                        <span>{c.id}</span>
-                        {c.isDemo ? (
-                          <span className="text-[9px] text-amber-700 dark:text-amber-400 font-sans border border-amber-500/40 px-1 rounded">
-                            DEMO
-                          </span>
-                        ) : (
-                          <span className="text-[9px] text-emerald-700 dark:text-emerald-400 font-sans border border-emerald-500/40 px-1 rounded">
-                            SQLITE
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-slate-900 dark:text-slate-200">{c.name}</div>
-                      <div className="text-[11px] text-slate-500">{c.demographics.indication}</div>
-                    </td>
-                    <td className="px-4 py-3 capitalize font-mono text-slate-600 dark:text-slate-400">
-                      {c.demographics.affectedSide}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-[11px]">
-                      {c.imaging ? (
-                        <span className="text-emerald-600 dark:text-emerald-400">
-                          {c.imaging.sliceCount} slices
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">None</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={c.status} />
-                    </td>
-                    <td className="px-4 py-3 font-mono text-[11px] text-slate-500">
-                      {c.updatedAt ? c.updatedAt.split('T')[0] : c.createdAt.split('T')[0]}
-                    </td>
-                    <td className="px-4 py-3 text-right space-x-2">
-                      <button
-                        onClick={() => {
-                          onSelectCase(c.id);
-                          onNavigate('anatomy3d');
-                        }}
-                        className="px-2.5 py-1 text-xs text-teal-700 dark:text-cyan-400 hover:underline border border-slate-200 dark:border-slate-800 rounded transition-colors"
-                      >
-                        Open 3D
-                      </button>
-                      <button
-                        onClick={() => {
-                          onSelectCase(c.id);
-                          onNavigate('imaging');
-                        }}
-                        className="px-2.5 py-1 text-xs text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 border border-slate-200 dark:border-slate-800 rounded transition-colors"
-                      >
-                        CT Slices
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );
