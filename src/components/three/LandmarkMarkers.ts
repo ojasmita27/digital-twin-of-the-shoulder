@@ -11,6 +11,7 @@ export class LandmarkMarkersManager {
   private markerMeshes: Map<string, THREE.Mesh> = new Map();
   private sphereGeo: THREE.SphereGeometry;
   private material: THREE.MeshStandardMaterial;
+  private labelTextureCache = new Map<string, THREE.CanvasTexture>();
 
   constructor() {
     this.group = new THREE.Group();
@@ -49,6 +50,27 @@ export class LandmarkMarkersManager {
       const stem = new THREE.Mesh(stemGeo, stemMat);
       stem.position.set(0, 3, 0);
       mesh.add(stem);
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 96;
+      const context = canvas.getContext('2d');
+      if (context) {
+        context.font = 'bold 32px sans-serif';
+        context.fillStyle = '#e2e8f0';
+        context.fillText(lm.name, 8, 58);
+      }
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      this.labelTextureCache.set(lm.id, texture);
+      const label = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthTest: false,
+      }));
+      label.scale.set(18, 3.4, 1);
+      label.position.set(0, 5, 0);
+      label.userData = { landmark: lm };
+      mesh.add(label);
 
       this.group.add(mesh);
       this.markerMeshes.set(lm.id, mesh);

@@ -9,7 +9,7 @@ import {
   BackendConfig,
   DicomUploadResponse,
 } from '../types/api';
-import { MeshArtifact, ResearchCase } from '../types/case';
+import { AnatomicalLandmark, MeshArtifact, ResearchCase, SavedMeasurement } from '../types/case';
 
 export const PRODUCTION_RENDER_BACKEND = 'https://digital-twin-of-the-shoulder.onrender.com';
 
@@ -315,6 +315,44 @@ export class ApiClient {
       `/api/cases/${encodeURIComponent(caseId)}/models/${encodeURIComponent(modelId)}`,
       { method: 'DELETE' },
     );
+  }
+
+  public async createLandmark(caseId: string, landmark: {
+    name: string;
+    structure: string;
+    coordinatesMm: [number, number, number];
+    provenance: 'manual_annotated' | 'ai_inferred_prototype';
+    modelId: string;
+    modelVersion: number;
+    coordinateUnit: string;
+    unitVerified: boolean;
+    validationNotes?: string;
+  }): Promise<ApiCallResult<AnatomicalLandmark>> {
+    return this.request<AnatomicalLandmark>(`/api/cases/${encodeURIComponent(caseId)}/landmarks`, {
+      method: 'POST',
+      body: JSON.stringify(landmark),
+    });
+  }
+
+  public async updateLandmark(caseId: string, landmarkId: string, updates: Partial<AnatomicalLandmark>): Promise<ApiCallResult<AnatomicalLandmark>> {
+    return this.request<AnatomicalLandmark>(
+      `/api/cases/${encodeURIComponent(caseId)}/landmarks/${encodeURIComponent(landmarkId)}`,
+      { method: 'PATCH', body: JSON.stringify(updates) },
+    );
+  }
+
+  public async deleteLandmark(caseId: string, landmarkId: string): Promise<ApiCallResult<{ success: boolean }>> {
+    return this.request<{ success: boolean }>(
+      `/api/cases/${encodeURIComponent(caseId)}/landmarks/${encodeURIComponent(landmarkId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  public async createMeasurement(caseId: string, measurement: Record<string, unknown>): Promise<ApiCallResult<SavedMeasurement>> {
+    return this.request<SavedMeasurement>(`/api/cases/${encodeURIComponent(caseId)}/measurements`, {
+      method: 'POST',
+      body: JSON.stringify(measurement),
+    });
   }
 
   /**

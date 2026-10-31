@@ -28,6 +28,7 @@ interface Anatomy3DViewProps {
 
 export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   activeCase,
+  onUpdateCaseLandmarks,
 }) => {
   const [selectedLandmark, setSelectedLandmark] = useState<AnatomicalLandmark | null>(null);
   const [customMeshInfo, setCustomMeshInfo] = useState<LoadedMeshResult | null>(null);
@@ -41,9 +42,12 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   const [activeTab, setActiveTab] = useState<'hierarchy' | 'landmarks' | 'geometry'>('hierarchy');
   const [geometryExpanded, setGeometryExpanded] = useState(false);
 
-  const landmarks = activeCase?.landmarks || [];
+  const savedModel = [...(activeCase?.meshes || [])].reverse().find((mesh) => !mesh.isDemoMesh) as MeshArtifact | undefined;
+  const landmarks = (activeCase?.landmarks || []).filter((landmark) => (
+    !savedModel || (landmark.modelId === savedModel.id && landmark.modelVersion === (savedModel.version || 1))
+  ));
   const isProceduralTemplate = !customMeshInfo && (!activeCase?.meshes || activeCase.meshes.length === 0);
-  const savedModel = (activeCase?.meshes || []).find((mesh) => !mesh.isDemoMesh) as MeshArtifact | undefined;
+  const staleLandmarkCount = (activeCase?.landmarks || []).length - landmarks.length;
 
   useEffect(() => {
     if (savedModel && saveStatus === 'idle') setSaveStatus('saved');
@@ -177,6 +181,11 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                 </div>
 
                 <div className="space-y-2">
+                  {staleLandmarkCount > 0 && (
+                    <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                      {staleLandmarkCount} landmark(s) belong to another mesh version and are hidden until that model is reopened.
+                    </div>
+                  )}
                   <div className="p-3 rounded-md bg-slate-50 dark:bg-slate-950 border border-slate-200/90 dark:border-slate-800 space-y-1">
                     <div className="flex items-center justify-between font-semibold text-slate-800 dark:text-slate-200">
                       <span>Scapular Cortical Body</span>
@@ -269,6 +278,27 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                       <div className="font-mono text-[11px] text-teal-700 dark:text-cyan-400 mt-1">
                         [{lm.coordinatesMm[0].toFixed(1)}, {lm.coordinatesMm[1].toFixed(1)},{' '}
                         {lm.coordinatesMm[2].toFixed(1)}] mm
+                      </div>
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          type="button"
+                          className="text-[10px] text-rose-700 dark:text-rose-300"
+                          onClick={async (event) => {
+                            event.stopPropagation();
+                            if (!activeCase) return;
+                            const result = await apiClient.deleteLandmark(activeCase.id, lm.id);
+                            if (result.status === 204) {
+                              const next = (activeCase.landmarks || []).filter((item) => item.id !== lm.id);
+                              onUpdateCaseLandmarks?.(next);
+                              caseStorage.updateCase(activeCase.id, { landmarks: next });
+                              if (selectedLandmark?.id === lm.id) setSelectedLandmark(null);
+                            } else {
+                              setMeshError(result.error || 'The landmark could not be deleted.');
+                            }
+                          }}
+                        >
+                          Delete
+                        </button>
                       </div>
 
                       {lm.validationNotes && (
@@ -395,24 +425,29 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                 setMeshError('Enter a landmark name before selecting a surface point.');
                 return;
               }
-              const landmark: AnatomicalLandmark = {
-                id: crypto.randomUUID(),
+              const landmarkPayload = {
                 name: landmarkName.trim(),
                 structure: 'scapula',
                 coordinatesMm: point,
-                provenance: 'manual_annotated',
+                provenance: 'manual_annotated' as const,
                 modelId: savedModel.id,
                 modelVersion: savedModel.version || 1,
                 coordinateUnit: savedModel.unit || 'unknown',
                 unitVerified: Boolean(savedModel.unitVerified),
                 verificationStatus: 'unverified',
                 validationNotes: 'Manually placed point; anatomical identity is unverified.',
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
               };
-              setLandmarkMode(false);
-              setLandmarkName('');
-              persistCase({ landmarks: [...(activeCase.landmarks || []), landmark] });
+              apiClient.createLandmark(activeCase.id, landmarkPayload).then((result) => {
+                if (!result.data) {
+                  setMeshError(result.error || 'The landmark could not be saved.');
+                  return;
+                }
+                const next = [...(activeCase.landmarks || []), result.data];
+                onUpdateCaseLandmarks?.(next);
+                caseStorage.updateCase(activeCase.id, { landmarks: next });
+                setLandmarkMode(false);
+                setLandmarkName('');
+              });
             }}
             onUnitScaleChange={(unit) => {
               if (!savedModel) return;
@@ -438,8 +473,21 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                 provenance: 'manual',
                 createdAt: new Date().toISOString(),
               };
-              const existing = activeCase.measurements?.manualMeasurements || [];
-              persistCase({ measurements: { ...(activeCase.measurements || {}), manualMeasurements: [...existing, measurement] } as ResearchCase['measurements'] });
+              apiClient.createMeasurement(activeCase.id, {
+                type: 'point_to_point',
+                modelId: measurement.modelId,
+                modelVersion: measurement.modelVersion,
+                pointA: measurement.pointA,
+                pointB: measurement.pointB,
+                displayUnit: measurement.displayUnit,
+              }).then((result) => {
+                if (!result.data) {
+                  setMeshError(result.error || 'The measurement could not be saved.');
+                  return;
+                }
+                const existing = activeCase.measurements?.manualMeasurements || [];
+                persistCase({ measurements: { ...(activeCase.measurements || {}), manualMeasurements: [...existing, result.data] } as ResearchCase['measurements'] });
+              });
             }}
             onMeshLoaded={async (info, file) => {
               setCustomMeshInfo(info);

@@ -116,6 +116,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const measureModeRef = useRef(false);
   const landmarkModeRef = useRef(landmarkMode);
   const onLandmarkPointRef = useRef(onLandmarkPoint);
+  const onSelectLandmarkRef = useRef(onSelectLandmark);
   const onMeasurementRef = useRef(onMeasurement);
   useEffect(() => {
     if (unitScaleProp) setUnitScale(unitScaleProp);
@@ -129,7 +130,8 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     landmarkModeRef.current = landmarkMode;
     onLandmarkPointRef.current = onLandmarkPoint;
     onMeasurementRef.current = onMeasurement;
-  }, [landmarkMode, onLandmarkPoint, onMeasurement]);
+    onSelectLandmarkRef.current = onSelectLandmark;
+  }, [landmarkMode, onLandmarkPoint, onMeasurement, onSelectLandmark]);
 
   const fitObjectToView = (object: THREE.Object3D) => {
     const camera = cameraRef.current;
@@ -243,13 +245,18 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     const handleMeshClick = (event: MouseEvent) => {
-      if (!customMeshRef.current || (!measureModeRef.current && !landmarkModeRef.current)) return;
+      if (!customMeshRef.current || (!measureModeRef.current && !landmarkModeRef.current && !landmarksManagerRef.current)) return;
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.set(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,
         -((event.clientY - rect.top) / rect.height) * 2 + 1,
       );
       raycaster.setFromCamera(pointer, camera);
+      const landmarkHit = raycaster.intersectObjects(landmarksManagerRef.current?.getGroup().children || [], true)[0];
+      if (landmarkHit && !landmarkModeRef.current && !measureModeRef.current) {
+        onSelectLandmarkRef.current?.(landmarkHit.object.userData.landmark || landmarkHit.object.parent?.userData.landmark || null);
+        return;
+      }
       const hit = raycaster.intersectObject(customMeshRef.current, false)[0];
       if (!hit || !measurementGroupRef.current) return;
       if (landmarkModeRef.current) {
