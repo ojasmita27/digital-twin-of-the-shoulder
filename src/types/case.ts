@@ -80,9 +80,12 @@ export interface SavedMeasurement {
   pointA: [number, number, number];
   pointB: [number, number, number];
   rawDistance: number;
+  displayDistance?: number;
   displayUnit: 'unknown' | 'mm' | 'cm' | 'in';
   scaleVerified: boolean;
-  type: 'point_to_point';
+  type: 'point_to_point' | 'angle';
+  pointC?: [number, number, number];
+  angleDegrees?: number;
   provenance: 'manual' | 'computed';
   label?: string;
   notes?: string;

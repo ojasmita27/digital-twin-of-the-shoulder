@@ -30,7 +30,7 @@ export class LandmarkMarkersManager {
     return this.group;
   }
 
-  public updateLandmarks(landmarks: AnatomicalLandmark[]) {
+  public updateLandmarks(landmarks: AnatomicalLandmark[], activeLandmarkId?: string | null) {
     // Clear existing
     while (this.group.children.length > 0) {
       const child = this.group.children[0];
@@ -39,7 +39,10 @@ export class LandmarkMarkersManager {
     this.markerMeshes.clear();
 
     landmarks.forEach((lm) => {
-      const mesh = new THREE.Mesh(this.sphereGeo, this.material);
+      const mesh = new THREE.Mesh(this.sphereGeo, this.material.clone());
+      const markerMaterial = mesh.material as THREE.MeshStandardMaterial;
+      markerMaterial.color.set(lm.id === activeLandmarkId ? '#f59e0b' : '#06b6d4');
+      markerMaterial.emissive.set(lm.id === activeLandmarkId ? '#b45309' : '#0891b2');
       mesh.position.set(lm.coordinatesMm[0], lm.coordinatesMm[1], lm.coordinatesMm[2]);
       mesh.userData = { landmark: lm };
       mesh.castShadow = true;

@@ -320,3 +320,140 @@ def test_invalid_input_handling(auth_headers):
         headers=auth_headers,
     )
     assert res_bad_side.status_code == 422
+
+
+def _case_with_model(auth_headers):
+    case = client.post(
+        "/api/cases",
+        json={
+            "name": "Landmark Test Case",
+            "demographics": {
+                "researchSubjectId": "LM-001",
+                "ageBand": "41-60",
+                "biologicalSex": "undisclosed",
+                "indication": "Research Normative",
+                "affectedSide": "right",
+            },
+        },
+        headers=auth_headers,
+    ).json()
+    model = client.post(
+        f"/api/cases/{case['id']}/models",
+        files={"file": ("shoulder.stl", b"solid shoulder\nendsolid shoulder\n", "application/sla")},
+        data={"metadata": json.dumps({"vertexCount": 3, "triangleCount": 1, "validationStatus": "valid"})},
+        headers=auth_headers,
+    ).json()["model"]
+    return case, model
+
+
+def test_landmark_lifecycle_and_model_validation(auth_headers):
+    case, model = _case_with_model(auth_headers)
+    landmark = client.post(
+        f"/api/cases/{case['id']}/landmarks",
+        json={
+            "name": "Glenoid center",
+            "structure": "scapula",
+            "coordinatesMm": [1, 2, 3],
+            "modelId": model["id"],
+            "modelVersion": model["version"],
+            "coordinateUnit": "unknown",
+        },
+        headers=auth_headers,
+    )
+    assert landmark.status_code == 201
+    landmark_id = landmark.json()["id"]
+
+    renamed = client.patch(
+        f"/api/cases/{case['id']}/landmarks/{landmark_id}",
+        json={"name": "Updated center", "coordinatesMm": [4, 5, 6]},
+        headers=auth_headers,
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Updated center"
+    assert renamed.json()["coordinatesMm"] == [4, 5, 6]
+
+    wrong_version = client.post(
+        f"/api/cases/{case['id']}/landmarks",
+        json={
+            "name": "Stale",
+            "coordinatesMm": [0, 0, 0],
+            "modelId": model["id"],
+            "modelVersion": model["version"] + 1,
+        },
+        headers=auth_headers,
+    )
+    assert wrong_version.status_code == 409
+
+    deleted = client.delete(f"/api/cases/{case['id']}/landmarks/{landmark_id}", headers=auth_headers)
+    assert deleted.status_code == 204
+
+
+def test_measurement_distance_angle_references_and_persistence(auth_headers):
+    case, model = _case_with_model(auth_headers)
+    landmark_ids = []
+    for name, point in [("A", [0, 0, 0]), ("B", [3, 0, 0]), ("C", [3, 4, 0])]:
+        response = client.post(
+            f"/api/cases/{case['id']}/landmarks",
+            json={"name": name, "coordinatesMm": point, "modelId": model["id"], "modelVersion": model["version"]},
+            headers=auth_headers,
+        )
+        assert response.status_code == 201
+        landmark_ids.append(response.json()["id"])
+
+    distance = client.post(
+        f"/api/cases/{case['id']}/measurements",
+        json={
+            "type": "point_to_point",
+            "modelId": model["id"],
+            "modelVersion": model["version"],
+            "landmarkIds": landmark_ids[:2],
+            "pointA": [99, 99, 99],
+            "pointB": [99, 99, 99],
+            "displayUnit": "cm",
+        },
+        headers=auth_headers,
+    )
+    assert distance.status_code == 201
+    assert distance.json()["rawDistance"] == 3
+    assert distance.json()["displayDistance"] == 0.3
+
+    angle = client.post(
+        f"/api/cases/{case['id']}/measurements",
+        json={
+            "type": "angle",
+            "modelId": model["id"],
+            "modelVersion": model["version"],
+            "landmarkIds": landmark_ids,
+            "pointA": [0, 0, 0],
+            "pointB": [0, 0, 0],
+            "displayUnit": "mm",
+        },
+        headers=auth_headers,
+    )
+    assert angle.status_code == 201
+    assert round(angle.json()["angleDegrees"], 5) == 90
+    listed = client.get(f"/api/cases/{case['id']}/measurements", headers=auth_headers)
+    assert listed.status_code == 200
+    assert len(listed.json()) == 2
+
+    invalid_reference = client.post(
+        f"/api/cases/{case['id']}/measurements",
+        json={
+            "type": "point_to_point",
+            "modelId": model["id"],
+            "modelVersion": model["version"],
+            "landmarkIds": ["not-in-case", landmark_ids[0]],
+            "pointA": [0, 0, 0],
+            "pointB": [1, 0, 0],
+        },
+        headers=auth_headers,
+    )
+    assert invalid_reference.status_code == 422
+
+
+def test_landmark_and_measurement_routes_require_case_access():
+    response = client.post(
+        "/api/cases/SHL-unknown/landmarks",
+        json={"name": "Blocked", "coordinatesMm": [0, 0, 0], "modelId": "model", "modelVersion": 1},
+    )
+    assert response.status_code == 401

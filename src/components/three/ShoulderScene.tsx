@@ -52,6 +52,8 @@ interface ShoulderSceneProps {
   onMeshError?: (message: string) => void;
   onMeasurement?: (points: { pointA: [number, number, number]; pointB: [number, number, number]; distance: number }) => void;
   landmarkMode?: boolean;
+  landmarkMoveMode?: boolean;
+  onLandmarkMove?: (landmarkId: string, point: [number, number, number]) => void;
   onLandmarkPoint?: (point: [number, number, number]) => void;
   unitScale?: UnitScale;
   onUnitScaleChange?: (unit: UnitScale) => void;
@@ -69,6 +71,8 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   onMeshError,
   onMeasurement,
   landmarkMode = false,
+  landmarkMoveMode = false,
+  onLandmarkMove,
   onLandmarkPoint,
   unitScale: unitScaleProp,
   onUnitScaleChange,
@@ -116,6 +120,9 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const measureModeRef = useRef(false);
   const landmarkModeRef = useRef(landmarkMode);
   const onLandmarkPointRef = useRef(onLandmarkPoint);
+  const landmarkMoveModeRef = useRef(landmarkMoveMode);
+  const onLandmarkMoveRef = useRef(onLandmarkMove);
+  const activeLandmarkIdRef = useRef(activeLandmarkId);
   const onSelectLandmarkRef = useRef(onSelectLandmark);
   const onMeasurementRef = useRef(onMeasurement);
   useEffect(() => {
@@ -129,9 +136,12 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   useEffect(() => {
     landmarkModeRef.current = landmarkMode;
     onLandmarkPointRef.current = onLandmarkPoint;
+    landmarkMoveModeRef.current = landmarkMoveMode;
+    onLandmarkMoveRef.current = onLandmarkMove;
+    activeLandmarkIdRef.current = activeLandmarkId;
     onMeasurementRef.current = onMeasurement;
     onSelectLandmarkRef.current = onSelectLandmark;
-  }, [landmarkMode, onLandmarkPoint, onMeasurement, onSelectLandmark]);
+  }, [activeLandmarkId, landmarkMode, landmarkMoveMode, onLandmarkPoint, onLandmarkMove, onMeasurement, onSelectLandmark]);
 
   const fitObjectToView = (object: THREE.Object3D) => {
     const camera = cameraRef.current;
@@ -245,7 +255,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     const handleMeshClick = (event: MouseEvent) => {
-      if (!customMeshRef.current || (!measureModeRef.current && !landmarkModeRef.current && !landmarksManagerRef.current)) return;
+      if (!customMeshRef.current) return;
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.set(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,
@@ -253,16 +263,23 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       );
       raycaster.setFromCamera(pointer, camera);
       const landmarkHit = raycaster.intersectObjects(landmarksManagerRef.current?.getGroup().children || [], true)[0];
-      if (landmarkHit && !landmarkModeRef.current && !measureModeRef.current) {
+      if (landmarkHit && !landmarkModeRef.current && !landmarkMoveModeRef.current && !measureModeRef.current) {
         onSelectLandmarkRef.current?.(landmarkHit.object.userData.landmark || landmarkHit.object.parent?.userData.landmark || null);
         return;
       }
       const hit = raycaster.intersectObject(customMeshRef.current, false)[0];
-      if (!hit || !measurementGroupRef.current) return;
+      if (!hit) return;
+      if (landmarkMoveModeRef.current) {
+        if (activeLandmarkIdRef.current && onLandmarkMoveRef.current) {
+          onLandmarkMoveRef.current(activeLandmarkIdRef.current, hit.point.toArray() as [number, number, number]);
+        }
+        return;
+      }
       if (landmarkModeRef.current) {
         onLandmarkPointRef.current?.(hit.point.toArray() as [number, number, number]);
         return;
       }
+      if (!measureModeRef.current || !measurementGroupRef.current) return;
       const marker = new THREE.Mesh(
         new THREE.SphereGeometry(Math.max(hit.distance * 0.012, 0.5), 12, 12),
         new THREE.MeshBasicMaterial({ color: '#22d3ee' }),
@@ -354,7 +371,6 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       );
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-      meshInfo.geometry.center();
       sceneRef.current.add(mesh);
       customMeshRef.current = mesh;
       setLoadedCustomName('Imported STL');
@@ -400,10 +416,10 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   // Update landmarks
   useEffect(() => {
     if (landmarksManagerRef.current) {
-      landmarksManagerRef.current.updateLandmarks(landmarks);
+      landmarksManagerRef.current.updateLandmarks(landmarks, activeLandmarkId);
       landmarksManagerRef.current.setVisible(showLandmarks);
     }
-  }, [landmarks, showLandmarks]);
+  }, [landmarks, activeLandmarkId, showLandmarks]);
 
   // Update Implants visibility
   useEffect(() => {
@@ -604,8 +620,6 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
             mesh.castShadow = true;
             mesh.receiveShadow = true;
 
-            // Center geometry and scale appropriately if needed
-            meshInfo.geometry.center();
             mesh.position.set(0, 0, 0);
 
             sceneRef.current.add(mesh);

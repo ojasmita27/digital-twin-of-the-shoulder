@@ -355,6 +355,10 @@ export class ApiClient {
     });
   }
 
+  public async listMeasurements(caseId: string): Promise<ApiCallResult<SavedMeasurement[]>> {
+    return this.request<SavedMeasurement[]>(`/api/cases/${encodeURIComponent(caseId)}/measurements`);
+  }
+
   /**
    * Upload real DICOM (.dcm) files to the FastAPI backend.
    */

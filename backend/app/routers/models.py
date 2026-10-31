@@ -36,6 +36,12 @@ class LandmarkPayload(BaseModel):
     validationNotes: Optional[str] = None
 
 
+class LandmarkUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    coordinatesMm: Optional[List[float]] = None
+    validationNotes: Optional[str] = None
+
+
 class MeasurementPayload(BaseModel):
     type: str = "point_to_point"
     modelId: str
@@ -43,6 +49,7 @@ class MeasurementPayload(BaseModel):
     pointA: List[float]
     pointB: List[float]
     pointC: Optional[List[float]] = None
+    landmarkIds: Optional[List[str]] = None
     displayUnit: str = "mm"
     label: Optional[str] = None
 
@@ -102,7 +109,7 @@ async def create_case_landmark(
 async def update_case_landmark(
     case_id: str,
     landmark_id: str,
-    payload: Dict[str, Any],
+    payload: LandmarkUpdatePayload,
     authorization: Optional[str] = Header(None),
 ):
     case = _case_for_user(case_id, authorization, modify=True)
@@ -110,11 +117,11 @@ async def update_case_landmark(
     if not existing:
         raise HTTPException(status_code=404, detail="The landmark was not found.")
     model = _model_for_case(case, str(existing.get("modelId", "")))
-    if "coordinatesMm" in payload:
-        payload["coordinatesMm"] = _validate_point(payload["coordinatesMm"], "coordinatesMm")
+    if payload.coordinatesMm is not None:
+        payload.coordinatesMm = _validate_point(payload.coordinatesMm, "coordinatesMm")
     if int(existing.get("modelVersion", 1)) != int(model.get("version", 1)):
         raise HTTPException(status_code=409, detail="The landmark is associated with an outdated model version.")
-    updated_landmark = {**existing, **payload, "updatedAt": datetime.now(timezone.utc).isoformat()}
+    updated_landmark = {**existing, **payload.model_dump(exclude_unset=True), "updatedAt": datetime.now(timezone.utc).isoformat()}
     updated = case_store.update_case(case_id, {
         "landmarks": [updated_landmark if item.get("id") == landmark_id else item for item in case.landmarks],
     })
@@ -146,20 +153,40 @@ async def create_case_measurement(
     model = _model_for_case(case, payload.modelId)
     if payload.modelVersion != int(model.get("version", 1)):
         raise HTTPException(status_code=409, detail="The measurement model version is outdated.")
-    point_a = _validate_point(payload.pointA, "pointA")
-    point_b = _validate_point(payload.pointB, "pointB")
-    point_c = _validate_point(payload.pointC, "pointC") if payload.pointC is not None else None
+    if payload.landmarkIds is not None:
+        expected_count = 3 if payload.type == "angle" else 2
+        if len(payload.landmarkIds) != expected_count or len(set(payload.landmarkIds)) != expected_count:
+            raise HTTPException(status_code=422, detail=f"{payload.type} measurement requires {expected_count} distinct landmark references.")
+        referenced = []
+        for landmark_id in payload.landmarkIds:
+            landmark = next((item for item in case.landmarks if item.get("id") == landmark_id), None)
+            if not landmark:
+                raise HTTPException(status_code=422, detail=f"Landmark '{landmark_id}' is not part of this case.")
+            if landmark.get("modelId") != payload.modelId or int(landmark.get("modelVersion", 1)) != payload.modelVersion:
+                raise HTTPException(status_code=409, detail="A referenced landmark belongs to a different model version.")
+            referenced.append(landmark)
+        point_a = _validate_point(referenced[0]["coordinatesMm"], "pointA")
+        point_b = _validate_point(referenced[1]["coordinatesMm"], "pointB")
+        point_c = _validate_point(referenced[2]["coordinatesMm"], "pointC") if len(referenced) == 3 else None
+    else:
+        point_a = _validate_point(payload.pointA, "pointA")
+        point_b = _validate_point(payload.pointB, "pointB")
+        point_c = _validate_point(payload.pointC, "pointC") if payload.pointC is not None else None
     vector_ab = [point_b[i] - point_a[i] for i in range(3)]
     distance = math.sqrt(sum(value * value for value in vector_ab))
     if distance <= 0:
         raise HTTPException(status_code=422, detail="Point-to-point distance requires distinct points.")
+    unit_factors = {"mm": 1.0, "cm": 0.1, "in": 1 / 25.4, "unknown": 1.0}
+    if payload.displayUnit not in unit_factors:
+        raise HTTPException(status_code=422, detail="displayUnit must be one of unknown, mm, cm, or in.")
     result: Dict[str, Any] = {
-        **payload.model_dump(),
+        **payload.model_dump(exclude={"pointA", "pointB", "pointC"}),
         "id": str(uuid.uuid4()),
         "caseId": case_id,
         "pointA": point_a,
         "pointB": point_b,
         "rawDistance": distance,
+        "displayDistance": round(distance * unit_factors[payload.displayUnit], 6),
         "scaleVerified": payload.displayUnit == model.get("unit", "unknown") and bool(model.get("unitVerified")),
         "provenance": "manual",
         "createdAt": datetime.now(timezone.utc).isoformat(),
@@ -184,6 +211,15 @@ async def create_case_measurement(
     if not updated:
         raise HTTPException(status_code=500, detail="The measurement could not be saved.")
     return result
+
+
+@router.get("/cases/{case_id}/measurements")
+async def list_case_measurements(
+    case_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    case = _case_for_user(case_id, authorization)
+    return (case.measurements or {}).get("manualMeasurements", [])
 
 
 @router.post("/cases/{case_id}/models", response_model=ModelUploadResponse, status_code=status.HTTP_201_CREATED)

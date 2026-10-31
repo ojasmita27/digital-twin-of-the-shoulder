@@ -37,7 +37,11 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   const [customMeshBuffer, setCustomMeshBuffer] = useState<ArrayBuffer | null>(null);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
   const [landmarkMode, setLandmarkMode] = useState(false);
+  const [landmarkMoveMode, setLandmarkMoveMode] = useState(false);
   const [landmarkName, setLandmarkName] = useState('');
+  const [renameValue, setRenameValue] = useState('');
+  const [measurementSelection, setMeasurementSelection] = useState<string[]>([]);
+  const [measurementError, setMeasurementError] = useState<string | null>(null);
   const restoringModel = useRef(false);
   const [activeTab, setActiveTab] = useState<'hierarchy' | 'landmarks' | 'geometry'>('hierarchy');
   const [geometryExpanded, setGeometryExpanded] = useState(false);
@@ -48,6 +52,63 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   ));
   const isProceduralTemplate = !customMeshInfo && (!activeCase?.meshes || activeCase.meshes.length === 0);
   const staleLandmarkCount = (activeCase?.landmarks || []).length - landmarks.length;
+
+  const updateLandmark = async (landmarkId: string, updates: Partial<AnatomicalLandmark>) => {
+    if (!activeCase || !savedModel) return;
+    const landmark = landmarks.find((item) => item.id === landmarkId);
+    if (!landmark || landmark.modelId !== savedModel.id || landmark.modelVersion !== (savedModel.version || 1)) {
+      setMeshError('This landmark is stale and cannot be edited on the current model.');
+      return;
+    }
+    const result = await apiClient.updateLandmark(activeCase.id, landmarkId, updates);
+    if (!result.data) {
+      setMeshError(result.error || 'The landmark could not be updated.');
+      return;
+    }
+    const next = (activeCase.landmarks || []).map((item) => item.id === landmarkId ? result.data as AnatomicalLandmark : item);
+    onUpdateCaseLandmarks?.(next);
+    caseStorage.updateCase(activeCase.id, { landmarks: next });
+    setSelectedLandmark(result.data);
+  };
+
+  const saveMeasurement = async (type: 'point_to_point' | 'angle') => {
+    if (!activeCase || !savedModel) return;
+    const required = type === 'angle' ? 3 : 2;
+    if (measurementSelection.length < required) {
+      setMeasurementError(`${type === 'angle' ? 'Angle' : 'Distance'} requires ${required} selected landmarks.`);
+      return;
+    }
+    const selected = measurementSelection.slice(0, required)
+      .map((id) => landmarks.find((landmark) => landmark.id === id))
+      .filter((landmark): landmark is AnatomicalLandmark => Boolean(landmark));
+    if (selected.length !== required) {
+      setMeasurementError('One or more selected landmarks are missing or stale.');
+      return;
+    }
+    const result = await apiClient.createMeasurement(activeCase.id, {
+      type,
+      modelId: savedModel.id,
+      modelVersion: savedModel.version || 1,
+      landmarkIds: selected.map((landmark) => landmark.id),
+      pointA: selected[0].coordinatesMm,
+      pointB: selected[1].coordinatesMm,
+      pointC: selected[2]?.coordinatesMm,
+      displayUnit: savedModel.unit || 'unknown',
+    });
+    if (!result.data) {
+      setMeasurementError(result.error || 'The measurement could not be saved.');
+      return;
+    }
+    const existing = activeCase.measurements?.manualMeasurements || [];
+    await persistCase({
+      measurements: {
+        ...(activeCase.measurements || {}),
+        manualMeasurements: [...existing, result.data],
+      } as ResearchCase['measurements'],
+    });
+    setMeasurementError(null);
+    setMeasurementSelection([]);
+  };
 
   useEffect(() => {
     if (savedModel && saveStatus === 'idle') setSaveStatus('saved');
@@ -235,6 +296,43 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                   <div className="text-[11px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 font-semibold">
                     Manual Landmarks
                   </div>
+                  {selectedLandmark && savedModel && (
+                    <div className="space-y-2 rounded border border-teal-200 dark:border-cyan-800/50 p-2">
+                      <div className="text-[11px] font-semibold text-teal-800 dark:text-cyan-200">
+                        Selected: {selectedLandmark.name}
+                      </div>
+                      <input
+                        value={renameValue || selectedLandmark.name}
+                        onChange={(event) => setRenameValue(event.target.value)}
+                        className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs"
+                        aria-label="Rename selected landmark"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          className="text-[10px] px-2 py-1 rounded border border-teal-300 text-teal-700 dark:text-cyan-300"
+                          onClick={() => {
+                            const name = renameValue.trim();
+                            if (!name) {
+                              setMeshError('Landmark name cannot be empty.');
+                              return;
+                            }
+                            updateLandmark(selectedLandmark.id, { name });
+                            setRenameValue('');
+                          }}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          type="button"
+                          className={`text-[10px] px-2 py-1 rounded border ${landmarkMoveMode ? 'bg-amber-100 border-amber-400 text-amber-800' : 'border-amber-300 text-amber-700'}`}
+                          onClick={() => setLandmarkMoveMode((active) => !active)}
+                        >
+                          {landmarkMoveMode ? 'Click mesh…' : 'Move selected'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {savedModel && (
                     <button
                       onClick={() => setLandmarkMode((active) => !active)}
@@ -282,6 +380,18 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                       <div className="flex gap-2 mt-2">
                         <button
                           type="button"
+                          className={`text-[10px] ${measurementSelection.includes(lm.id) ? 'text-amber-700 dark:text-amber-300' : 'text-slate-500'}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setMeasurementSelection((current) => current.includes(lm.id)
+                              ? current.filter((id) => id !== lm.id)
+                              : [...current, lm.id]);
+                          }}
+                        >
+                          {measurementSelection.includes(lm.id) ? 'Selected for measurement' : 'Use in measurement'}
+                        </button>
+                        <button
+                          type="button"
                           className="text-[10px] text-rose-700 dark:text-rose-300"
                           onClick={async (event) => {
                             event.stopPropagation();
@@ -308,6 +418,20 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                       )}
                     </div>
                   ))
+                )}
+                {measurementSelection.length > 0 && (
+                  <div className="rounded border border-slate-200 dark:border-slate-700 p-2 space-y-2">
+                    <div className="text-[10px] text-slate-500">Selected landmarks: {measurementSelection.length}</div>
+                    <div className="flex gap-2">
+                      <button type="button" className="text-[10px] px-2 py-1 rounded border border-teal-300 text-teal-700 dark:text-cyan-300" onClick={() => saveMeasurement('point_to_point')}>
+                        Save distance
+                      </button>
+                      <button type="button" className="text-[10px] px-2 py-1 rounded border border-teal-300 text-teal-700 dark:text-cyan-300" onClick={() => saveMeasurement('angle')}>
+                        Save angle
+                      </button>
+                    </div>
+                    {measurementError && <div className="text-[10px] text-rose-700 dark:text-rose-300">{measurementError}</div>}
+                  </div>
                 )}
               </div>
             )}
@@ -420,6 +544,11 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
             activeLandmarkId={selectedLandmark?.id}
             onSelectLandmark={setSelectedLandmark}
             landmarkMode={landmarkMode}
+            landmarkMoveMode={landmarkMoveMode}
+            onLandmarkMove={(landmarkId, point) => {
+              setLandmarkMoveMode(false);
+              updateLandmark(landmarkId, { coordinatesMm: point });
+            }}
             onLandmarkPoint={(point) => {
               if (!activeCase || !savedModel || !landmarkName.trim()) {
                 setMeshError('Enter a landmark name before selecting a surface point.');
