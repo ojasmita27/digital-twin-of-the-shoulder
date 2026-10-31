@@ -90,6 +90,14 @@ export interface SavedMeasurement {
   label?: string;
   notes?: string;
   createdAt: string;
+  pointRefs?: Array<{ kind: 'landmark' | 'implant_reference'; id: string }>;
+  implantAssetId?: string;
+  stale?: boolean;
+}
+
+export interface PlanningMeasurement extends SavedMeasurement {
+  pointRefs: Array<{ kind: 'landmark' | 'implant_reference'; id: string }>;
+  implantAssetId?: string;
 }
 
 export interface MorphometricMeasurements {
@@ -150,6 +158,19 @@ export interface ImplantPlanningConfig {
   };
   notes?: string;
   planningApprovedBy?: string;
+}
+
+export interface ImplantReferencePoint {
+  id: string;
+  caseId: string;
+  implantAssetId: string;
+  implantAssetVersion: number;
+  name: string;
+  coordinatesLocal: [number, number, number];
+  coordinateUnit: 'unknown' | 'mm' | 'cm' | 'in';
+  unitVerified: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ImplantAsset {
@@ -245,6 +266,8 @@ export interface ResearchCase {
   measurements?: MorphometricMeasurements;
   implantPlan?: ImplantPlanningConfig;
   implantAssets?: ImplantAsset[];
+  implantReferencePoints?: ImplantReferencePoint[];
+  planningMeasurements?: PlanningMeasurement[];
   reports: ClinicalReport[];
   createdByUserId?: string;
 }

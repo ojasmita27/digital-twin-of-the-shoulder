@@ -520,3 +520,77 @@ def test_implant_asset_planning_persistence_and_validation(auth_headers):
     persisted = client.get(f"/api/cases/{case['id']}", headers=auth_headers).json()
     assert persisted["implantAssets"][0]["id"] == implant["id"]
     assert persisted["implantPlan"]["implantAssetId"] == implant["id"]
+
+
+def test_ordered_planning_measurements_use_landmarks_and_implant_references(auth_headers):
+    case, model = _case_with_model(auth_headers)
+    implant = client.post(
+        f"/api/cases/{case['id']}/implants",
+        files={"file": ("component.obj", b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", "text/plain")},
+        data={"metadata": json.dumps({"unit": "unknown", "unitVerified": False})},
+        headers=auth_headers,
+    ).json()["implant"]
+    plan = {
+        "patientModelId": model["id"],
+        "patientModelVersion": model["version"],
+        "implantAssetId": implant["id"],
+        "implantAssetVersion": implant["version"],
+        "implantTransform": {
+            "translation": [1, 0, 0],
+            "rotationDeg": [0, 0, 0],
+            "coordinateUnit": "unknown",
+            "unitVerified": False,
+        },
+    }
+    assert client.put(f"/api/cases/{case['id']}/implant-planning", json=plan, headers=auth_headers).status_code == 200
+    landmark = client.post(
+        f"/api/cases/{case['id']}/landmarks",
+        json={"name": "Measurement point", "coordinatesMm": [1, 3, 0], "modelId": model["id"], "modelVersion": model["version"]},
+        headers=auth_headers,
+    ).json()
+    reference = client.post(
+        f"/api/cases/{case['id']}/implant-reference-points",
+        json={
+            "implantAssetId": implant["id"],
+            "implantAssetVersion": implant["version"],
+            "name": "Implant point",
+            "coordinatesLocal": [0, 0, 0],
+            "coordinateUnit": "unknown",
+            "unitVerified": False,
+        },
+        headers=auth_headers,
+    ).json()
+    measurement = client.post(
+        f"/api/cases/{case['id']}/measurements",
+        json={
+            "type": "point_to_point",
+            "modelId": model["id"],
+            "modelVersion": model["version"],
+            "pointRefs": [
+                {"kind": "implant_reference", "id": reference["id"]},
+                {"kind": "landmark", "id": landmark["id"]},
+            ],
+            "implantAssetId": implant["id"],
+            "displayUnit": "unknown",
+            "label": "Implant to landmark",
+        },
+        headers=auth_headers,
+    )
+    assert measurement.status_code == 201
+    assert measurement.json()["rawDistance"] == 3
+    listed = client.get(f"/api/cases/{case['id']}/planning-measurements", headers=auth_headers)
+    assert listed.status_code == 200
+    assert listed.json()[0]["pointRefs"][0]["kind"] == "implant_reference"
+
+    invalid = client.post(
+        f"/api/cases/{case['id']}/measurements",
+        json={
+            "type": "point_to_point",
+            "modelId": model["id"],
+            "modelVersion": model["version"],
+            "pointRefs": [{"kind": "implant_reference", "id": "missing"}, {"kind": "landmark", "id": landmark["id"]}],
+            "implantAssetId": implant["id"],
+        },
+        headers=auth_headers,
+    )
+    assert invalid.status_code == 422

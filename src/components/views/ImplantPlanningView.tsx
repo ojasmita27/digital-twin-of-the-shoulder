@@ -4,8 +4,9 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { ResearchCase, ImplantPlanningConfig, MeshArtifact, ImplantAsset } from '../../types/case';
-import { ShoulderScene } from '../three/ShoulderScene';
+import * as THREE from 'three';
+import { ResearchCase, ImplantPlanningConfig, MeshArtifact, ImplantAsset, ImplantReferencePoint, PlanningMeasurement } from '../../types/case';
+import { SceneMeasurementOverlay, ShoulderScene } from '../three/ShoulderScene';
 import { apiClient } from '../../services/apiClient';
 import { caseStorage } from '../../services/caseStorage';
 import {
@@ -38,6 +39,22 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
   const [showImplant, setShowImplant] = useState(true);
   const [translation, setTranslation] = useState<[number, number, number]>(existingPlan?.implantTransform?.translation || [0, 0, 0]);
   const [rotationDeg, setRotationDeg] = useState<[number, number, number]>(existingPlan?.implantTransform?.rotationDeg || [0, 0, 0]);
+  const [savedTransform, setSavedTransform] = useState({
+    translation: existingPlan?.implantTransform?.translation || [0, 0, 0] as [number, number, number],
+    rotationDeg: existingPlan?.implantTransform?.rotationDeg || [0, 0, 0] as [number, number, number],
+  });
+  const [transformMode, setTransformMode] = useState<'translate' | 'rotate'>('translate');
+  const [gizmoEnabled, setGizmoEnabled] = useState(false);
+  const [referencePoints, setReferencePoints] = useState<ImplantReferencePoint[]>(activeCase?.implantReferencePoints || []);
+  const [selectedReferencePointId, setSelectedReferencePointId] = useState<string | null>(null);
+  const [referencePointMode, setReferencePointMode] = useState(false);
+  const [showReferencePoints, setShowReferencePoints] = useState(true);
+  const [planningMeasurements, setPlanningMeasurements] = useState<PlanningMeasurement[]>([]);
+  const [measurementType, setMeasurementType] = useState<'point_to_point' | 'angle'>('point_to_point');
+  const [measurementPoints, setMeasurementPoints] = useState<string[]>(['', '']);
+  const [measurementName, setMeasurementName] = useState('');
+  const [selectedMeasurementId, setSelectedMeasurementId] = useState<string | null>(null);
+  const [showMeasurementOverlays, setShowMeasurementOverlays] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -52,6 +69,35 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
       return sum + delta * delta;
     }, 0))
     : null;
+
+  useEffect(() => {
+    const nextTranslation = existingPlan?.implantTransform?.translation || [0, 0, 0] as [number, number, number];
+    const nextRotation = existingPlan?.implantTransform?.rotationDeg || [0, 0, 0] as [number, number, number];
+    setTranslation(nextTranslation);
+    setRotationDeg(nextRotation);
+    setSavedTransform({ translation: nextTranslation, rotationDeg: nextRotation });
+    setReferencePoints(activeCase?.implantReferencePoints || []);
+    setSelectedReferencePointId(null);
+    setDirty(false);
+  }, [activeCase?.id, existingPlan?.implantAssetId, existingPlan?.implantTransform?.translation, existingPlan?.implantTransform?.rotationDeg]);
+
+  useEffect(() => {
+    if (!activeCase) return;
+    apiClient.listImplantReferencePoints(activeCase.id).then((result) => {
+      if (result.data) setReferencePoints(result.data);
+    });
+  }, [activeCase?.id]);
+
+  useEffect(() => {
+    if (!activeCase) {
+      setPlanningMeasurements([]);
+      return;
+    }
+    apiClient.listPlanningMeasurements(activeCase.id).then((result) => {
+      if (result.data) setPlanningMeasurements(result.data);
+      else setError(result.error || 'Saved planning measurements could not be loaded.');
+    });
+  }, [activeCase?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -159,6 +205,7 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
     }
     onUpdatePlan?.(result.data);
     caseStorage.updateCase(activeCase.id, { implantPlan: result.data });
+    setSavedTransform({ translation, rotationDeg });
     setDirty(false);
     setStatus('Planning state saved.');
   };
@@ -174,6 +221,166 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
     setTranslation([0, 0, 0]);
     setRotationDeg([0, 0, 0]);
     setDirty(true);
+  };
+
+  const cancelTransform = () => {
+    setTranslation(savedTransform.translation);
+    setRotationDeg(savedTransform.rotationDeg);
+    setDirty(false);
+    setStatus('Unsaved transform changes discarded.');
+  };
+
+  const worldToImplantLocal = (point: [number, number, number]): [number, number, number] => {
+    let [x, y, z] = point.map((value, index) => value - translation[index]) as [number, number, number];
+    const [rx, ry, rz] = rotationDeg.map((value) => value * Math.PI / 180);
+    [x, y] = [x * Math.cos(rz) + y * Math.sin(rz), -x * Math.sin(rz) + y * Math.cos(rz)];
+    [x, z] = [x * Math.cos(ry) - z * Math.sin(ry), x * Math.sin(ry) + z * Math.cos(ry)];
+    [y, z] = [y * Math.cos(rx) + z * Math.sin(rx), -y * Math.sin(rx) + z * Math.cos(rx)];
+    return [x, y, z];
+  };
+
+  const localToWorld = (point: [number, number, number]): [number, number, number] => {
+    const vector = new THREE.Vector3(...point);
+    vector.applyEuler(new THREE.Euler(...rotationDeg.map((value) => value * Math.PI / 180) as [number, number, number]));
+    vector.add(new THREE.Vector3(...translation));
+    return vector.toArray() as [number, number, number];
+  };
+
+  const pointOptions = [
+    ...validLandmarks.map((landmark) => ({ value: `landmark:${landmark.id}`, label: `Landmark · ${landmark.name}` })),
+    ...referencePoints.filter((point) => point.implantAssetId === implantAsset?.id).map((point) => ({ value: `implant_reference:${point.id}`, label: `Implant · ${point.name}` })),
+  ];
+
+  const resolvePoint = (value: string): [number, number, number] | null => {
+    const [kind, id] = value.split(':');
+    if (kind === 'landmark') {
+      return validLandmarks.find((landmark) => landmark.id === id)?.coordinatesMm || null;
+    }
+    if (kind === 'implant_reference') {
+      const point = referencePoints.find((item) => item.id === id);
+      return point ? localToWorld(point.coordinatesLocal) : null;
+    }
+    return null;
+  };
+
+  const measurementUnitFactor = (from: string, to: string): number => {
+    const toMm: Record<string, number> = { unknown: 1, mm: 1, cm: 10, in: 25.4 };
+    return (toMm[from] || 1) / (toMm[to] || 1);
+  };
+
+  const measurementGeometry = (points: [number, number, number][]) => {
+    const first = new THREE.Vector3(...points[0]);
+    const second = new THREE.Vector3(...points[1]);
+    const distance = first.distanceTo(second);
+    if (points.length !== 3) return { value: distance, unit: patientModel?.unit || 'unknown' as const };
+    const third = new THREE.Vector3(...points[2]);
+    const ba = first.clone().sub(second).normalize();
+    const bc = third.clone().sub(second).normalize();
+    return {
+      value: THREE.MathUtils.radToDeg(Math.acos(Math.max(-1, Math.min(1, ba.dot(bc))))),
+      unit: 'unknown' as const,
+    };
+  };
+
+  const isMeasurementStale = (measurement: PlanningMeasurement): boolean => (
+    measurement.modelId !== patientModel?.id ||
+    measurement.modelVersion !== (patientModel?.version || 1) ||
+    measurement.pointRefs?.some((ref) => ref.kind === 'landmark' && !validLandmarks.some((landmark) => landmark.id === ref.id)) ||
+    measurement.pointRefs?.some((ref) => ref.kind === 'implant_reference' && !referencePoints.some((point) => point.id === ref.id))
+  );
+
+  const measurementOverlays: SceneMeasurementOverlay[] = planningMeasurements.flatMap((measurement) => {
+    if (!measurement.pointRefs) return [];
+    const points = measurement.pointRefs.map((ref) => resolvePoint(`${ref.kind}:${ref.id}`));
+    if (points.some((point) => !point)) return [];
+    const geometry = measurementGeometry(points as [number, number, number][]);
+    const currentValue = measurement.type === 'angle'
+      ? geometry.value
+      : geometry.value * measurementUnitFactor(patientModel?.unit || 'unknown', measurement.displayUnit);
+    return [{
+      id: measurement.id,
+      points: points as [number, number, number][],
+      label: measurement.label || measurement.type,
+      value: currentValue,
+      unit: measurement.displayUnit,
+      selected: measurement.id === selectedMeasurementId,
+    }];
+  });
+
+  const createPlanningMeasurement = async () => {
+    if (!activeCase || !patientModel) return;
+    const expectedCount = measurementType === 'angle' ? 3 : 2;
+    if (measurementPoints.length !== expectedCount || measurementPoints.some((point) => !point)) {
+      setError(`${measurementType === 'angle' ? 'Angle' : 'Distance'} requires ${expectedCount} valid point selections.`);
+      return;
+    }
+    const pointRefs = measurementPoints.map((value) => {
+      const separator = value.indexOf(':');
+      return { kind: value.slice(0, separator) as 'landmark' | 'implant_reference', id: value.slice(separator + 1) };
+    });
+    const result = await apiClient.createPlanningMeasurement(activeCase.id, {
+      type: measurementType,
+      modelId: patientModel.id,
+      modelVersion: patientModel.version || 1,
+      pointRefs,
+      implantAssetId: pointRefs.some((ref) => ref.kind === 'implant_reference') ? implantAsset?.id : undefined,
+      displayUnit: patientModel.unit || 'unknown',
+      label: measurementName.trim() || undefined,
+    });
+    if (!result.data) {
+      setError(result.error || 'The planning measurement could not be saved.');
+      return;
+    }
+    setPlanningMeasurements((items) => [...items, result.data as PlanningMeasurement]);
+    setSelectedMeasurementId(result.data.id);
+    setMeasurementPoints(Array(expectedCount).fill(''));
+    setMeasurementName('');
+    setStatus('Planning measurement saved.');
+  };
+
+  const handleImplantReferencePoint = async (worldPoint: [number, number, number]) => {
+    if (!activeCase || !implantAsset) return;
+    const name = window.prompt('Name this implant reference point');
+    if (!name?.trim()) return;
+    const result = await apiClient.createImplantReferencePoint(activeCase.id, {
+      implantAssetId: implantAsset.id,
+      implantAssetVersion: implantAsset.version,
+      name: name.trim(),
+      coordinatesLocal: worldToImplantLocal(worldPoint),
+      coordinateUnit: patientModel?.unit || 'unknown',
+      unitVerified: Boolean(patientModel?.unitVerified),
+    });
+    if (!result.data) {
+      setError(result.error || 'The implant reference point could not be saved.');
+      return;
+    }
+    setReferencePoints((points) => [...points, result.data as ImplantReferencePoint]);
+    setReferencePointMode(false);
+    setStatus('Implant reference point saved.');
+  };
+
+  const deleteReferencePoint = async () => {
+    if (!activeCase || !selectedReferencePointId) return;
+    const result = await apiClient.deleteImplantReferencePoint(activeCase.id, selectedReferencePointId);
+    if (!result.data) {
+      setError(result.error || 'The implant reference point could not be deleted.');
+      return;
+    }
+    setReferencePoints((points) => points.filter((point) => point.id !== selectedReferencePointId));
+    setSelectedReferencePointId(null);
+  };
+
+  const renameReferencePoint = async () => {
+    if (!activeCase || !selectedReferencePointId) return;
+    const current = referencePoints.find((point) => point.id === selectedReferencePointId);
+    const name = window.prompt('Rename implant reference point', current?.name || '');
+    if (!name?.trim()) return;
+    const result = await apiClient.updateImplantReferencePoint(activeCase.id, selectedReferencePointId, { name: name.trim() });
+    if (!result.data) {
+      setError(result.error || 'The implant reference point could not be renamed.');
+      return;
+    }
+    setReferencePoints((points) => points.map((point) => point.id === result.data?.id ? result.data : point));
   };
 
   const handleImplantImport = async (file: File) => {
@@ -299,7 +506,14 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
             })}
             <div className="flex gap-2">
               <button type="button" onClick={resetTransform} className="rounded border border-amber-300 px-2 py-1 text-xs text-amber-700">Reset transform</button>
+              <button type="button" onClick={() => setStatus('Draft transform applied to the viewport. Save to persist it.')} className="rounded border border-teal-300 px-2 py-1 text-xs text-teal-700">Apply</button>
+              <button type="button" onClick={cancelTransform} disabled={!dirty} className="rounded border px-2 py-1 text-xs disabled:opacity-40">Cancel</button>
               {dirty && <span className="text-[11px] text-amber-700 self-center">Unsaved changes</span>}
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <button type="button" onClick={() => setTransformMode('translate')} className={`rounded border px-2 py-1 ${transformMode === 'translate' ? 'bg-teal-100 text-teal-800' : ''}`}>Translate gizmo</button>
+              <button type="button" onClick={() => setTransformMode('rotate')} className={`rounded border px-2 py-1 ${transformMode === 'rotate' ? 'bg-teal-100 text-teal-800' : ''}`}>Rotate gizmo</button>
+              <button type="button" onClick={() => setGizmoEnabled((value) => !value)} className="rounded border px-2 py-1">{gizmoEnabled ? 'Hide gizmo' : 'Show gizmo'}</button>
             </div>
           </div>
 
@@ -323,7 +537,99 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
             )}
           </div>
 
-          {/* Procedure Type */}
+          <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+                <span className="text-[11px] font-mono text-purple-700 dark:text-purple-300 font-semibold uppercase block">
+                  Implant reference points · local implant coordinates
+                </span>
+                <div className="flex gap-2">
+                  <button type="button" disabled={!implantAsset} onClick={() => setReferencePointMode((value) => !value)} className="rounded border px-2 py-1 text-xs disabled:opacity-40">
+                    {referencePointMode ? 'Click implant surface…' : 'Add reference point'}
+                  </button>
+                  <button type="button" onClick={() => setShowReferencePoints((value) => !value)} className="rounded border px-2 py-1 text-xs">
+                    {showReferencePoints ? 'Hide points' : 'Show points'}
+                  </button>
+                  <button type="button" disabled={!selectedReferencePointId} onClick={() => void renameReferencePoint()} className="rounded border px-2 py-1 text-xs disabled:opacity-40">Rename</button>
+                  <button type="button" disabled={!selectedReferencePointId} onClick={() => void deleteReferencePoint()} className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:opacity-40">Delete</button>
+                </div>
+                <select value={selectedReferencePointId || ''} onChange={(event) => setSelectedReferencePointId(event.target.value || null)} className="w-full rounded border px-2 py-1 text-xs">
+                  <option value="">Select a reference point</option>
+                  {referencePoints.filter((point) => point.implantAssetId === implantAsset?.id).map((point) => (
+                    <option key={point.id} value={point.id}>{point.name}</option>
+                  ))}
+                </select>
+                <div className="text-[10px] text-slate-500">Points are manually selected on the imported implant surface. They have no automatic clinical meaning.                </div>
+              </div>
+
+              <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+                <span className="text-[11px] font-mono text-teal-700 dark:text-cyan-400 font-semibold uppercase block">
+                  Spatial measurements
+                </span>
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    value={measurementType}
+                    onChange={(event) => {
+                      const next = event.target.value as 'point_to_point' | 'angle';
+                      setMeasurementType(next);
+                      setMeasurementPoints(Array(next === 'angle' ? 3 : 2).fill(''));
+                    }}
+                    className="rounded border px-2 py-1 text-xs"
+                  >
+                    <option value="point_to_point">Distance</option>
+                    <option value="angle">Angle (A-B-C)</option>
+                  </select>
+                  <input
+                    value={measurementName}
+                    onChange={(event) => setMeasurementName(event.target.value)}
+                    placeholder="Measurement name"
+                    className="rounded border px-2 py-1 text-xs"
+                  />
+                </div>
+                {measurementPoints.map((point, index) => (
+                  <select
+                    key={`${measurementType}-${index}`}
+                    value={point}
+                    onChange={(event) => setMeasurementPoints((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}
+                    className="w-full rounded border px-2 py-1 text-xs"
+                  >
+                    <option value="">{measurementType === 'angle' ? `Point ${String.fromCharCode(65 + index)}` : `Point ${index + 1}`}</option>
+                    {pointOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                ))}
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => void createPlanningMeasurement()} className="rounded border border-teal-300 px-2 py-1 text-xs text-teal-700">Calculate & save</button>
+                  <button type="button" onClick={() => setShowMeasurementOverlays((value) => !value)} className="rounded border px-2 py-1 text-xs">
+                    {showMeasurementOverlays ? 'Hide overlays' : 'Show overlays'}
+                  </button>
+                </div>
+                <select
+                  value={selectedMeasurementId || ''}
+                  onChange={(event) => setSelectedMeasurementId(event.target.value || null)}
+                  className="w-full rounded border px-2 py-1 text-xs"
+                >
+                  <option value="">Select saved measurement</option>
+                  {planningMeasurements.map((measurement) => (
+                    <option key={measurement.id} value={measurement.id}>
+                      {isMeasurementStale(measurement) ? '[stale] ' : ''}{measurement.label || measurement.type} · {measurement.type === 'angle' ? `${(measurement.angleDegrees || 0).toFixed(2)}°` : `${(measurement.displayDistance || measurement.rawDistance).toFixed(2)} ${measurement.displayUnit}`}
+                    </option>
+                  ))}
+                </select>
+                {planningMeasurements.some(isMeasurementStale) && (
+                  <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                    Some saved measurements are stale because their patient model or referenced point changed. They are not shown as valid overlays.
+                  </div>
+                )}
+                {selectedMeasurementId && measurementOverlays.find((measurement) => measurement.id === selectedMeasurementId) && (
+                  <div className="text-[11px] text-slate-600 dark:text-slate-400">
+                    {(() => {
+                      const selected = measurementOverlays.find((measurement) => measurement.id === selectedMeasurementId);
+                      return selected ? `${selected.label}: ${selected.value.toFixed(3)} ${selected.unit === 'unknown' ? 'unverified units' : selected.unit}${selected.points.length === 3 ? ' (angle)' : ''}` : null;
+                    })()}
+                    <div>Selected overlay is highlighted in the viewport. Values are geometric and not clinically validated.</div>
+                  </div>
+                )}
+              </div>
+
+              {/* Procedure Type */}
           <div>
             <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
               Surgical Reconstruction
@@ -489,6 +795,21 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
               implantBuffer={implantBuffer}
               implantModelName={implantAsset?.filename || 'implant.stl'}
               implantTransform={{ translation, rotationDeg }}
+              implantTransformMode={transformMode}
+              implantGizmoEnabled={gizmoEnabled}
+              onImplantTransformChange={(next) => {
+                setTranslation(next.translation);
+                setRotationDeg(next.rotationDeg);
+                setDirty(true);
+              }}
+              implantReferenceMode={referencePointMode}
+              onImplantReferencePoint={(point) => void handleImplantReferencePoint(point)}
+              implantReferencePoints={referencePoints}
+              selectedImplantReferencePointId={selectedReferencePointId}
+              showImplantReferencePoints={showReferencePoints}
+              onSelectImplantReferencePoint={(point) => setSelectedReferencePointId(point?.id || null)}
+              measurementOverlays={measurementOverlays}
+              showMeasurementOverlays={showMeasurementOverlays}
               showBone={showBone}
               showImplant={showImplant}
               onImplantError={setError}

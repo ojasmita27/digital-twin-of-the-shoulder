@@ -9,7 +9,7 @@ import {
   BackendConfig,
   DicomUploadResponse,
 } from '../types/api';
-import { AnatomicalLandmark, ImplantAsset, MeshArtifact, ResearchCase, SavedMeasurement } from '../types/case';
+import { AnatomicalLandmark, ImplantAsset, ImplantReferencePoint, MeshArtifact, PlanningMeasurement, ResearchCase, SavedMeasurement } from '../types/case';
 
 export const PRODUCTION_RENDER_BACKEND = 'https://digital-twin-of-the-shoulder.onrender.com';
 
@@ -354,6 +354,37 @@ export class ApiClient {
     });
   }
 
+  public async listImplantReferencePoints(caseId: string): Promise<ApiCallResult<ImplantReferencePoint[]>> {
+    return this.request<ImplantReferencePoint[]>(`/api/cases/${encodeURIComponent(caseId)}/implant-reference-points`);
+  }
+
+  public async createImplantReferencePoint(caseId: string, point: {
+    implantAssetId: string;
+    implantAssetVersion: number;
+    name: string;
+    coordinatesLocal: [number, number, number];
+    coordinateUnit: ImplantReferencePoint['coordinateUnit'];
+    unitVerified: boolean;
+  }): Promise<ApiCallResult<ImplantReferencePoint>> {
+    return this.request<ImplantReferencePoint>(`/api/cases/${encodeURIComponent(caseId)}/implant-reference-points`, {
+      method: 'POST',
+      body: JSON.stringify(point),
+    });
+  }
+
+  public async updateImplantReferencePoint(caseId: string, pointId: string, updates: Partial<Pick<ImplantReferencePoint, 'name' | 'coordinatesLocal'>>): Promise<ApiCallResult<ImplantReferencePoint>> {
+    return this.request<ImplantReferencePoint>(`/api/cases/${encodeURIComponent(caseId)}/implant-reference-points/${encodeURIComponent(pointId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+  }
+
+  public async deleteImplantReferencePoint(caseId: string, pointId: string): Promise<ApiCallResult<{ success: boolean }>> {
+    return this.request<{ success: boolean }>(`/api/cases/${encodeURIComponent(caseId)}/implant-reference-points/${encodeURIComponent(pointId)}`, {
+      method: 'DELETE',
+    });
+  }
+
   public async deleteModel(caseId: string, modelId: string): Promise<ApiCallResult<{ success: boolean }>> {
     return this.request<{ success: boolean }>(
       `/api/cases/${encodeURIComponent(caseId)}/models/${encodeURIComponent(modelId)}`,
@@ -394,6 +425,17 @@ export class ApiClient {
 
   public async createMeasurement(caseId: string, measurement: Record<string, unknown>): Promise<ApiCallResult<SavedMeasurement>> {
     return this.request<SavedMeasurement>(`/api/cases/${encodeURIComponent(caseId)}/measurements`, {
+      method: 'POST',
+      body: JSON.stringify(measurement),
+    });
+  }
+
+  public async listPlanningMeasurements(caseId: string): Promise<ApiCallResult<PlanningMeasurement[]>> {
+    return this.request<PlanningMeasurement[]>(`/api/cases/${encodeURIComponent(caseId)}/planning-measurements`);
+  }
+
+  public async createPlanningMeasurement(caseId: string, measurement: Record<string, unknown>): Promise<ApiCallResult<PlanningMeasurement>> {
+    return this.request<PlanningMeasurement>(`/api/cases/${encodeURIComponent(caseId)}/measurements`, {
       method: 'POST',
       body: JSON.stringify(measurement),
     });

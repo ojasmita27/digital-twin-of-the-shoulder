@@ -6,10 +6,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { buildProceduralShoulder, ProceduralShoulderModel } from './ProceduralAnatomy';
 import { LandmarkMarkersManager } from './LandmarkMarkers';
+import { ReferencePointMarkersManager } from './ReferencePointMarkers';
 import { parseModelArrayBuffer, LoadedMeshResult } from './STLLoaderUtil';
-import { AnatomicalLandmark } from '../../types/case';
+import { AnatomicalLandmark, ImplantReferencePoint } from '../../types/case';
 import {
   RotateCcw,
   Layers,
@@ -40,6 +42,15 @@ export type CameraPreset =
 export type ShadingMode = 'bone_ivory' | 'wireframe' | 'xray' | 'normal';
 type UnitScale = 'unknown' | 'mm' | 'cm' | 'in';
 
+export interface SceneMeasurementOverlay {
+  id: string;
+  points: Array<[number, number, number]>;
+  label: string;
+  value: number;
+  unit: UnitScale;
+  selected?: boolean;
+}
+
 interface ShoulderSceneProps {
   landmarks?: AnatomicalLandmark[];
   showImplants?: boolean;
@@ -63,6 +74,17 @@ interface ShoulderSceneProps {
   onLandmarkPoint?: (point: [number, number, number]) => void;
   unitScale?: UnitScale;
   onUnitScaleChange?: (unit: UnitScale) => void;
+  implantTransformMode?: 'translate' | 'rotate';
+  implantGizmoEnabled?: boolean;
+  onImplantTransformChange?: (transform: { translation: [number, number, number]; rotationDeg: [number, number, number] }) => void;
+  implantReferenceMode?: boolean;
+  onImplantReferencePoint?: (point: [number, number, number]) => void;
+  implantReferencePoints?: ImplantReferencePoint[];
+  selectedImplantReferencePointId?: string | null;
+  showImplantReferencePoints?: boolean;
+  onSelectImplantReferencePoint?: (point: ImplantReferencePoint | null) => void;
+  measurementOverlays?: SceneMeasurementOverlay[];
+  showMeasurementOverlays?: boolean;
 }
 
 export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
@@ -88,12 +110,24 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   onLandmarkPoint,
   unitScale: unitScaleProp,
   onUnitScaleChange,
+  implantTransformMode = 'translate',
+  implantGizmoEnabled = false,
+  onImplantTransformChange,
+  implantReferenceMode = false,
+  onImplantReferencePoint,
+  implantReferencePoints = [],
+  selectedImplantReferencePointId = null,
+  showImplantReferencePoints = true,
+  onSelectImplantReferencePoint,
+  measurementOverlays = [],
+  showMeasurementOverlays = true,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const transformControlsRef = useRef<TransformControls | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
   // Model refs
@@ -102,6 +136,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const implantMeshRef = useRef<THREE.Mesh | null>(null);
   const measurementGroupRef = useRef<THREE.Group | null>(null);
   const landmarksManagerRef = useRef<LandmarkMarkersManager | null>(null);
+  const referenceMarkersManagerRef = useRef<ReferencePointMarkersManager | null>(null);
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
   const axesHelperRef = useRef<THREE.AxesHelper | null>(null);
 
@@ -138,6 +173,11 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const activeLandmarkIdRef = useRef(activeLandmarkId);
   const onSelectLandmarkRef = useRef(onSelectLandmark);
   const onMeasurementRef = useRef(onMeasurement);
+  const onImplantTransformChangeRef = useRef(onImplantTransformChange);
+  const implantReferenceModeRef = useRef(implantReferenceMode);
+  const onImplantReferencePointRef = useRef(onImplantReferencePoint);
+  const onSelectImplantReferencePointRef = useRef(onSelectImplantReferencePoint);
+  const implantTransformModeRef = useRef(implantTransformMode);
   useEffect(() => {
     if (unitScaleProp) setUnitScale(unitScaleProp);
   }, [unitScaleProp]);
@@ -154,7 +194,12 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     activeLandmarkIdRef.current = activeLandmarkId;
     onMeasurementRef.current = onMeasurement;
     onSelectLandmarkRef.current = onSelectLandmark;
-  }, [activeLandmarkId, landmarkMode, landmarkMoveMode, onLandmarkPoint, onLandmarkMove, onMeasurement, onSelectLandmark]);
+    onImplantTransformChangeRef.current = onImplantTransformChange;
+    implantReferenceModeRef.current = implantReferenceMode;
+    onImplantReferencePointRef.current = onImplantReferencePoint;
+    onSelectImplantReferencePointRef.current = onSelectImplantReferencePoint;
+    implantTransformModeRef.current = implantTransformMode;
+  }, [activeLandmarkId, landmarkMode, landmarkMoveMode, onLandmarkPoint, onLandmarkMove, onMeasurement, onSelectLandmark, onImplantTransformChange, implantReferenceMode, onImplantReferencePoint, onSelectImplantReferencePoint, implantTransformMode]);
 
   const fitObjectToView = (object: THREE.Object3D) => {
     const camera = cameraRef.current;
@@ -231,6 +276,26 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     controls.target.set(0, 0, 0);
     controlsRef.current = controls;
 
+    const transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.setMode(implantTransformModeRef.current);
+    transformControls.addEventListener('dragging-changed', (event) => {
+      controls.enabled = !event.value;
+    });
+    transformControls.addEventListener('objectChange', () => {
+      const object = transformControls.object;
+      if (!object) return;
+      onImplantTransformChangeRef.current?.({
+        translation: [object.position.x, object.position.y, object.position.z],
+        rotationDeg: [
+          THREE.MathUtils.radToDeg(object.rotation.x),
+          THREE.MathUtils.radToDeg(object.rotation.y),
+          THREE.MathUtils.radToDeg(object.rotation.z),
+        ],
+      });
+    });
+    scene.add(transformControls.getHelper());
+    transformControlsRef.current = transformControls;
+
     // 5. Lighting
     const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x090d16, 0.7);
     scene.add(hemiLight);
@@ -275,6 +340,9 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     const landmarkMgr = new LandmarkMarkersManager();
     scene.add(landmarkMgr.getGroup());
     landmarksManagerRef.current = landmarkMgr;
+    const referenceMgr = new ReferencePointMarkersManager();
+    scene.add(referenceMgr.getGroup());
+    referenceMarkersManagerRef.current = referenceMgr;
     const measurementGroup = new THREE.Group();
     scene.add(measurementGroup);
     measurementGroupRef.current = measurementGroup;
@@ -290,9 +358,23 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       );
       raycaster.setFromCamera(pointer, camera);
       const landmarkHit = raycaster.intersectObjects(landmarksManagerRef.current?.getGroup().children || [], true)[0];
+      const referenceHit = raycaster.intersectObjects(referenceMarkersManagerRef.current?.getGroup().children || [], true)[0];
+      if (referenceHit && !implantReferenceModeRef.current) {
+        onSelectImplantReferencePointRef.current?.(
+          referenceHit.object.userData.referencePoint || referenceHit.object.parent?.userData.referencePoint || null,
+        );
+        return;
+      }
       if (landmarkHit && !landmarkModeRef.current && !landmarkMoveModeRef.current && !measureModeRef.current) {
         onSelectLandmarkRef.current?.(landmarkHit.object.userData.landmark || landmarkHit.object.parent?.userData.landmark || null);
         return;
+      }
+      if (implantReferenceModeRef.current && implantMeshRef.current) {
+        const implantHit = raycaster.intersectObject(implantMeshRef.current, false)[0];
+        if (implantHit) {
+          onImplantReferencePointRef.current?.(implantHit.point.toArray() as [number, number, number]);
+          return;
+        }
       }
       const hit = raycaster.intersectObject(customMeshRef.current, false)[0];
       if (!hit) return;
@@ -370,6 +452,9 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       resizeObserver.disconnect();
       controls.dispose();
+      transformControls.detach();
+      transformControls.dispose();
+      scene.remove(transformControls.getHelper());
       renderer.domElement.removeEventListener('click', handleMeshClick);
       renderer.dispose();
       if (mount.contains(renderer.domElement)) {
@@ -450,6 +535,46 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       setImplantMeshTransform(implantMeshRef.current, implantTransform);
     }
   }, [implantTransform, showImplant]);
+
+  useEffect(() => {
+    const group = measurementGroupRef.current;
+    if (!group) return;
+    group.clear();
+    if (!showMeasurementOverlays) return;
+    measurementOverlays.forEach((measurement) => {
+      const points = measurement.points.map((point) => new THREE.Vector3(...point));
+      const markerMaterial = new THREE.MeshBasicMaterial({ color: measurement.selected ? '#facc15' : '#22d3ee' });
+      points.forEach((point) => {
+        const marker = new THREE.Mesh(new THREE.SphereGeometry(1.6, 12, 12), markerMaterial.clone());
+        marker.position.copy(point);
+        group.add(marker);
+      });
+      const lineMaterial = new THREE.LineBasicMaterial({ color: measurement.selected ? '#facc15' : '#22d3ee' });
+      group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), lineMaterial));
+      if (points.length === 3) {
+        group.add(new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([points[1], points[0], points[1], points[2]]),
+          lineMaterial.clone(),
+        ));
+      }
+    });
+  }, [measurementOverlays, showMeasurementOverlays]);
+
+  useEffect(() => {
+    const gizmo = transformControlsRef.current;
+    const implant = implantMeshRef.current;
+    if (!gizmo) return;
+    gizmo.setMode(implantTransformMode);
+    if (implantGizmoEnabled && showImplant && implant) gizmo.attach(implant);
+    else gizmo.detach();
+  }, [implantGizmoEnabled, implantTransformMode, showImplant, implantBuffer]);
+
+  useEffect(() => {
+    const manager = referenceMarkersManagerRef.current;
+    if (!manager) return;
+    manager.update(implantReferencePoints, implantTransform || { translation: [0, 0, 0], rotationDeg: [0, 0, 0] }, selectedImplantReferencePointId);
+    manager.setVisible(showImplantReferencePoints && showImplant);
+  }, [implantReferencePoints, selectedImplantReferencePointId, showImplantReferencePoints, showImplant, implantTransform]);
 
   // Update Theme in Three.js Scene
   useEffect(() => {

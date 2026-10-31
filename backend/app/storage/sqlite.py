@@ -73,8 +73,10 @@ class SqliteCaseStore:
                     meshes_json TEXT NOT NULL DEFAULT '[]',
                     landmarks_json TEXT NOT NULL DEFAULT '[]',
                     measurements_json TEXT,
+                    planning_measurements_json TEXT NOT NULL DEFAULT '[]',
                     implant_plan_json TEXT,
                     implant_assets_json TEXT NOT NULL DEFAULT '[]',
+                    implant_reference_points_json TEXT NOT NULL DEFAULT '[]',
                     reports_json TEXT NOT NULL DEFAULT '[]',
                     created_by_user_id TEXT,
                     is_archived INTEGER NOT NULL DEFAULT 0
@@ -84,6 +86,10 @@ class SqliteCaseStore:
             existing_columns = {row["name"] for row in cursor.execute("PRAGMA table_info(cases)").fetchall()}
             if "implant_assets_json" not in existing_columns:
                 cursor.execute("ALTER TABLE cases ADD COLUMN implant_assets_json TEXT NOT NULL DEFAULT '[]'")
+            if "implant_reference_points_json" not in existing_columns:
+                cursor.execute("ALTER TABLE cases ADD COLUMN implant_reference_points_json TEXT NOT NULL DEFAULT '[]'")
+            if "planning_measurements_json" not in existing_columns:
+                cursor.execute("ALTER TABLE cases ADD COLUMN planning_measurements_json TEXT NOT NULL DEFAULT '[]'")
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_cases_created_at ON cases(created_at DESC)"
             )
@@ -557,6 +563,16 @@ class SqliteCaseStore:
         implant_assets = (
             json.loads(row["implant_assets_json"]) if "implant_assets_json" in row.keys() and row["implant_assets_json"] else []
         )
+        implant_reference_points = (
+            json.loads(row["implant_reference_points_json"])
+            if "implant_reference_points_json" in row.keys() and row["implant_reference_points_json"]
+            else []
+        )
+        planning_measurements = (
+            json.loads(row["planning_measurements_json"])
+            if "planning_measurements_json" in row.keys() and row["planning_measurements_json"]
+            else []
+        )
         reports = json.loads(row["reports_json"]) if row["reports_json"] else []
 
         created_by_user_id = row["created_by_user_id"] if "created_by_user_id" in row.keys() else None
@@ -576,6 +592,8 @@ class SqliteCaseStore:
             measurements=measurements,
             implantPlan=implant_plan,
             implantAssets=implant_assets,
+            implantReferencePoints=implant_reference_points,
+            planningMeasurements=planning_measurements,
             reports=reports,
             createdByUserId=created_by_user_id,
         )
@@ -746,6 +764,12 @@ class SqliteCaseStore:
         implant_assets = updates.get("implantAssets", existing.implantAssets)
         implant_assets_json = json.dumps(implant_assets) if implant_assets is not None else "[]"
 
+        implant_reference_points = updates.get("implantReferencePoints", existing.implantReferencePoints)
+        implant_reference_points_json = json.dumps(implant_reference_points) if implant_reference_points is not None else "[]"
+
+        planning_measurements = updates.get("planningMeasurements", existing.planningMeasurements)
+        planning_measurements_json = json.dumps(planning_measurements) if planning_measurements is not None else "[]"
+
         reports = updates.get("reports", existing.reports)
         reports_json = json.dumps(reports) if reports is not None else "[]"
 
@@ -767,6 +791,8 @@ class SqliteCaseStore:
                     measurements_json = ?,
                     implant_plan_json = ?,
                     implant_assets_json = ?,
+                    implant_reference_points_json = ?,
+                    planning_measurements_json = ?,
                     reports_json = ?
                 WHERE id = ?
                 """,
@@ -784,6 +810,8 @@ class SqliteCaseStore:
                     measurements_json,
                     implant_plan_json,
                     implant_assets_json,
+                    implant_reference_points_json,
+                    planning_measurements_json,
                     reports_json,
                     case_id,
                 ),
