@@ -5,9 +5,11 @@
 Case-bound DICOM uploads retain the original slice files under the configured data directory. A validated multi-slice CT series can be processed with:
 
 - `POST /api/cases/{case_id}/imaging/segmentation?thresholdHu=300`
+- `GET /api/cases/{case_id}/imaging/segmentation/preview?orientation=axial&sliceIndex=0`
+- `POST /api/cases/{case_id}/imaging/segmentation/corrections`
 - `POST /api/cases/{case_id}/imaging/reconstruct?thresholdHu=300`
 
-The current segmentation is an explicit Hounsfield-unit threshold prototype, followed by `scikit-image` marching-cubes surface extraction in DICOM patient LPS coordinates. It is not a pretrained anatomical model, does not produce separate labels, and must be inspected/corrected before research use. A single slice, inconsistent geometry, empty mask, or failed extraction returns an explicit error. Original DICOM files are never modified.
+The current segmentation is an explicit Hounsfield-unit threshold prototype, followed by optional slice-local brush corrections and `scikit-image` marching-cubes surface extraction in DICOM patient LPS coordinates. It is not a pretrained anatomical model, does not produce separate labels, and must be inspected/corrected before research use. A single slice, inconsistent geometry, empty mask, invalid correction, or failed extraction returns an explicit error. Original DICOM files are never modified; masks are versioned losslessly as compressed NumPy arrays and corrected masks mark prior meshes outdated.
 
 FastAPI backend service for patient-specific shoulder anatomy reconstruction and preoperative planning.
 

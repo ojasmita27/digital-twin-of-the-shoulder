@@ -48,6 +48,7 @@ export interface CTSliceMetadata {
   sourceFiles?: string[];
   slicePreviewUrls?: string[];
   processingStatus?: string;
+  segmentationPreviewAvailable?: boolean;
   fileCount?: number;
   uploadedFiles?: string[];
   sliceLocation?: number;
@@ -143,6 +144,17 @@ export interface SegmentationJob {
   logMessages: string[];
   diceScoreScapula?: number;
   diceScoreHumerus?: number;
+  maxThresholdHu?: number;
+  version?: number;
+  inputDimensions?: number[];
+  voxelSpacingMm?: number[];
+  voxelCount?: number;
+  segmentationVolumeMm3?: number;
+  maskStorageName?: string;
+  reconstructionStatus?: 'outdated' | 'completed' | 'failed';
+  updatedAt?: string;
+  processingError?: string | null;
+  manualCorrections?: Array<Record<string, unknown>>;
 }
 
 export interface MeshArtifact {

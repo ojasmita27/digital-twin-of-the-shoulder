@@ -423,9 +423,10 @@ export class ApiClient {
     );
   }
 
-  public async segmentCase(caseId: string, thresholdHu = 300): Promise<ApiCallResult<Record<string, unknown>>> {
+  public async segmentCase(caseId: string, thresholdHu = 300, maxThresholdHu?: number): Promise<ApiCallResult<Record<string, unknown>>> {
+    const maxQuery = maxThresholdHu === undefined ? '' : `&maxThresholdHu=${maxThresholdHu}`;
     return this.request<Record<string, unknown>>(
-      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation?thresholdHu=${thresholdHu}`,
+      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation?thresholdHu=${thresholdHu}${maxQuery}`,
       { method: 'POST' },
     );
   }
@@ -434,6 +435,41 @@ export class ApiClient {
     return this.request<Record<string, unknown>>(
       `/api/cases/${encodeURIComponent(caseId)}/imaging/reconstruct?thresholdHu=${thresholdHu}`,
       { method: 'POST' },
+    );
+  }
+
+  public async getSegmentationPreview(
+    caseId: string,
+    orientation: 'axial' | 'coronal' | 'sagittal',
+    sliceIndex: number,
+    windowCenter?: number,
+    windowWidth?: number,
+  ): Promise<ApiCallResult<{
+    ctPreviewUrl: string;
+    maskPreviewUrl?: string | null;
+    orientation: string;
+    sliceIndex: number;
+    dimensions: number[];
+    spacingMm: number[];
+    segmentationVersion?: number;
+  }>> {
+    return this.request(
+      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation/preview?orientation=${orientation}&sliceIndex=${sliceIndex}&windowCenter=${windowCenter ?? 450}&windowWidth=${windowWidth ?? 1500}`,
+      { method: 'GET' },
+    );
+  }
+
+  public async correctSegmentation(
+    caseId: string,
+    sliceIndex: number,
+    operations: Array<{ x: number; y: number; radius: number; add: boolean }>,
+  ): Promise<ApiCallResult<Record<string, unknown>>> {
+    return this.request<Record<string, unknown>>(
+      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation/corrections`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ sliceIndex, operations }),
+      },
     );
   }
 }

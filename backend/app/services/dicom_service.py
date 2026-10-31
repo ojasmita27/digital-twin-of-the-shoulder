@@ -484,10 +484,29 @@ def extract_patient_space_mesh(
         ) from exc
 
     mask = volume >= threshold_hu
+    return extract_patient_space_mesh_from_mask(mask, analysis, threshold_hu)
+
+
+def extract_patient_space_mesh_from_mask(
+    mask: Any,
+    analysis: Dict[str, Any],
+    threshold_hu: Optional[float] = None,
+) -> Tuple[bytes, Dict[str, Any]]:
+    """Extract a patient-space mesh from a persisted binary segmentation mask."""
+    if not IMAGING_AVAILABLE:
+        raise DicomValidationError("numpy is required for CT reconstruction.")
+    try:
+        from skimage.measure import marching_cubes
+    except ImportError as exc:
+        raise DicomValidationError(
+            "scikit-image is not installed; marching-cubes reconstruction is unavailable."
+        ) from exc
     voxel_count = int(mask.sum())
     if voxel_count == 0:
         raise DicomValidationError(
-            f"Segmentation is empty at threshold {threshold_hu:.1f} HU; lower the threshold or upload a bone CT series."
+            "Segmentation is empty"
+            + (f" at threshold {threshold_hu:.1f} HU" if threshold_hu is not None else "")
+            + "; adjust the segmentation or upload a bone CT series."
         )
     if voxel_count == int(mask.size):
         raise DicomValidationError("Segmentation fills the entire volume; the threshold is not suitable for reconstruction.")
@@ -521,12 +540,18 @@ def extract_patient_space_mesh(
     mesh_bytes = output.getvalue()
     mins = vertices.min(axis=0)
     maxs = vertices.max(axis=0)
+    triangle_vectors = vertices[faces[:, 1]] - vertices[faces[:, 0]]
+    triangle_vectors_b = vertices[faces[:, 2]] - vertices[faces[:, 0]]
+    surface_area = float(
+        0.5 * np.linalg.norm(np.cross(triangle_vectors, triangle_vectors_b), axis=1).sum()
+    )
     stats = {
         "vertexCount": int(len(vertices)),
         "triangleCount": int(len(faces)),
         "faceCount": int(len(faces)),
         "voxelCount": voxel_count,
         "thresholdHu": threshold_hu,
+        "surfaceAreaMm2": round(surface_area, 3),
         "boundingBox": {
             "x": round(float(maxs[0] - mins[0]), 3),
             "y": round(float(maxs[1] - mins[1]), 3),
@@ -535,3 +560,58 @@ def extract_patient_space_mesh(
         "physicalCoordinateSystem": "DICOM patient LPS",
     }
     return mesh_bytes, stats
+
+
+def render_plane_preview_base64(
+    volume: Any,
+    mask: Optional[Any],
+    orientation: str,
+    slice_index: int,
+    window_center: float,
+    window_width: float,
+    target_size: int = 512,
+) -> Dict[str, Optional[str]]:
+    """Render a real CT plane and an aligned mask overlay from the same volume."""
+    if not IMAGING_AVAILABLE:
+        raise DicomValidationError("numpy and Pillow are required for CT previews.")
+    if orientation == "axial":
+        image = volume[slice_index, :, :]
+        mask_slice = mask[slice_index, :, :] if mask is not None else None
+    elif orientation == "coronal":
+        image = volume[:, slice_index, :]
+        mask_slice = mask[:, slice_index, :] if mask is not None else None
+    elif orientation == "sagittal":
+        image = volume[:, :, slice_index]
+        mask_slice = mask[:, :, slice_index] if mask is not None else None
+    else:
+        raise DicomValidationError(f"Unsupported preview orientation '{orientation}'.")
+
+    image = np.asarray(image, dtype=np.float32)
+    if window_width <= 0:
+        raise DicomValidationError("Window width must be greater than zero.")
+    minimum = window_center - window_width / 2.0
+    maximum = window_center + window_width / 2.0
+    grayscale = (np.clip(image, minimum, maximum) - minimum) / (maximum - minimum)
+    base = Image.fromarray((grayscale * 255).astype(np.uint8))
+    base.thumbnail((target_size, target_size), Image.Resampling.BILINEAR)
+    resized_size = base.size
+    offset = ((target_size - base.width) // 2, (target_size - base.height) // 2)
+    canvas = Image.new("L", (target_size, target_size), 0)
+    canvas.paste(base, offset)
+    base = canvas
+
+    base_buffer = io.BytesIO()
+    base.save(base_buffer, format="PNG")
+    result: Dict[str, Optional[str]] = {
+        "ctPreviewUrl": "data:image/png;base64," + base64.b64encode(base_buffer.getvalue()).decode("ascii"),
+        "maskPreviewUrl": None,
+    }
+    if mask_slice is not None:
+        mask_image = Image.fromarray((np.asarray(mask_slice, dtype=np.uint8) * 255))
+        mask_image = mask_image.resize(resized_size, Image.Resampling.NEAREST)
+        mask_canvas = Image.new("L", (target_size, target_size), 0)
+        mask_canvas.paste(mask_image, offset)
+        mask_buffer = io.BytesIO()
+        mask_canvas.save(mask_buffer, format="PNG")
+        result["maskPreviewUrl"] = "data:image/png;base64," + base64.b64encode(mask_buffer.getvalue()).decode("ascii")
+    return result

@@ -23,7 +23,8 @@ from ..services.dicom_service import (
     analyze_dicom_series,
     DicomValidationError,
     load_volume_from_files,
-    extract_patient_space_mesh,
+    extract_patient_space_mesh_from_mask,
+    render_plane_preview_base64,
 )
 from ..config import settings
 
@@ -76,6 +77,43 @@ class DicomUploadResponse(BaseModel):
     primaryPreviewUrl: Optional[str] = None
     sourceFiles: List[str] = []
     processingStatus: str = "validated"
+
+
+class SegmentationCorrection(BaseModel):
+    sliceIndex: int
+    operations: List[Dict[str, Any]]
+
+
+def _owned_case_for_modify(case_id: str, authorization: Optional[str]):
+    user = require_role([UserRole.DOCTOR, UserRole.ADMIN])(authorization)
+    case = case_store.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
+    if not case_store.user_can_modify_case(user, case):
+        raise HTTPException(status_code=403, detail=f"Access denied for research case '{case_id}'.")
+    return user, case
+
+
+def _series_paths(case_id: str, case: Any) -> List[str]:
+    series_dir = os.path.join(settings.DATA_DIR, "imaging", case_id)
+    return [
+        os.path.join(series_dir, os.path.basename(str(name)))
+        for name in (case.imaging or {}).get("sourceFiles", [])
+    ]
+
+
+def _load_saved_mask(case_id: str, case: Any):
+    import numpy as np
+
+    job = case.segmentationJob or {}
+    storage_name = os.path.basename(str(job.get("maskStorageName", "")))
+    if not storage_name:
+        raise DicomValidationError("No saved segmentation mask exists for this case.")
+    path = os.path.join(settings.DATA_DIR, "imaging", case_id, storage_name)
+    if not os.path.isfile(path):
+        raise DicomValidationError("The saved segmentation mask is unavailable.")
+    with np.load(path, allow_pickle=False) as data:
+        return data["mask"].astype(np.uint8), path
 
 
 async def process_uploaded_dicom_files(
@@ -291,45 +329,162 @@ async def upload_case_dicom(
 async def segment_case_ct(
     case_id: str,
     thresholdHu: float = 300.0,
+    maxThresholdHu: Optional[float] = None,
     authorization: Optional[str] = Header(None),
 ):
-    """Create a real, threshold-based mask from the persisted CT volume."""
-    user = require_role([UserRole.DOCTOR, UserRole.ADMIN])(authorization)
-    case = case_store.get_case(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
-    if not case_store.user_can_modify_case(user, case):
-        raise HTTPException(status_code=403, detail=f"Access denied for research case '{case_id}'.")
-    imaging = case.imaging or {}
-    source_files = [str(name) for name in imaging.get("sourceFiles", [])]
+    """Create a versioned mask from actual persisted CT HU values."""
+    user, case = _owned_case_for_modify(case_id, authorization)
+    if maxThresholdHu is not None and thresholdHu >= maxThresholdHu:
+        raise HTTPException(status_code=422, detail="Minimum threshold must be lower than maximum threshold.")
+    paths = _series_paths(case_id, case)
     series_dir = os.path.join(settings.DATA_DIR, "imaging", case_id)
-    paths = [os.path.join(series_dir, os.path.basename(name)) for name in source_files]
     if len(paths) < 2:
         raise HTTPException(status_code=400, detail="At least two persisted DICOM slices are required for segmentation.")
     try:
         volume, analysis = load_volume_from_files(paths)
         mask = volume >= thresholdHu
+        if maxThresholdHu is not None:
+            mask &= volume <= maxThresholdHu
         if not bool(mask.any()):
-            raise DicomValidationError(f"Segmentation is empty at threshold {thresholdHu:.1f} HU.")
+            raise DicomValidationError(
+                f"Segmentation is empty for threshold range {thresholdHu:.1f} to "
+                f"{maxThresholdHu:.1f} HU." if maxThresholdHu is not None
+                else f"Segmentation is empty at threshold {thresholdHu:.1f} HU."
+            )
         segmentation_id = str(uuid.uuid4())
         mask_path = os.path.join(series_dir, f"{segmentation_id}.npz")
         import numpy as np
         np.savez_compressed(mask_path, mask=mask.astype(np.uint8), thresholdHu=thresholdHu)
+        spacing = analysis["spacingMm"]
+        volume_mm3 = float(mask.sum()) * float(spacing[0]) * float(spacing[1]) * float(spacing[2])
     except (DicomValidationError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"Segmentation failed: {exc}") from exc
+    now = datetime.now(timezone.utc).isoformat()
     job = {
         "jobId": segmentation_id,
         "status": "completed",
         "method": "threshold",
         "thresholdHu": thresholdHu,
+        "maxThresholdHu": maxThresholdHu,
         "maskStorageName": os.path.basename(mask_path),
+        "version": 1,
         "voxelCount": int(mask.sum()),
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "segmentationVolumeMm3": round(volume_mm3, 3),
+        "inputDimensions": [int(value) for value in volume.shape],
+        "voxelSpacingMm": [float(value) for value in spacing],
+        "createdAt": now,
+        "updatedAt": now,
+        "completedAt": now,
+        "reconstructionStatus": "outdated",
+        "manualCorrections": [],
+        "processingError": None,
         "limitations": "Prototype threshold segmentation; requires user inspection and correction before clinical use.",
     }
     case_store.update_case(case_id, {"segmentationJob": job, "status": "segmentation_completed"})
     return job
+
+
+@router.get("/cases/{case_id}/imaging/segmentation")
+async def get_case_segmentation(
+    case_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    user = get_current_user(authorization)
+    case = case_store.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
+    if not case_store.user_can_access_case(user, case):
+        raise HTTPException(status_code=403, detail=f"Access denied for research case '{case_id}'.")
+    return case.segmentationJob or {}
+
+
+@router.get("/cases/{case_id}/imaging/segmentation/preview")
+async def get_segmentation_preview(
+    case_id: str,
+    orientation: str = "axial",
+    sliceIndex: int = 0,
+    windowCenter: Optional[float] = None,
+    windowWidth: Optional[float] = None,
+    authorization: Optional[str] = Header(None),
+):
+    user = get_current_user(authorization)
+    case = case_store.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
+    if not case_store.user_can_access_case(user, case):
+        raise HTTPException(status_code=403, detail=f"Access denied for research case '{case_id}'.")
+    try:
+        volume, analysis = load_volume_from_files(_series_paths(case_id, case))
+        mask = None
+        if case.segmentationJob:
+            mask, _ = _load_saved_mask(case_id, case)
+        dimensions = {
+            "axial": volume.shape[0],
+            "coronal": volume.shape[1],
+            "sagittal": volume.shape[2],
+        }
+        if orientation not in dimensions or sliceIndex < 0 or sliceIndex >= dimensions[orientation]:
+            raise DicomValidationError("Requested preview slice is outside the stored volume.")
+        preview = render_plane_preview_base64(
+            volume,
+            mask,
+            orientation,
+            sliceIndex,
+            float(windowCenter if windowCenter is not None else (case.imaging or {}).get("windowCenter", 450)),
+            float(windowWidth if windowWidth is not None else (case.imaging or {}).get("windowWidth", 1500)),
+        )
+        return {
+            **preview,
+            "orientation": orientation,
+            "sliceIndex": sliceIndex,
+            "dimensions": list(volume.shape),
+            "spacingMm": analysis["spacingMm"],
+            "segmentationVersion": (case.segmentationJob or {}).get("version"),
+        }
+    except (DicomValidationError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Preview failed: {exc}") from exc
+
+
+@router.post("/cases/{case_id}/imaging/segmentation/corrections")
+async def correct_case_segmentation(
+    case_id: str,
+    correction: SegmentationCorrection,
+    authorization: Optional[str] = Header(None),
+):
+    """Persist slice-local voxel edits without changing source DICOM files."""
+    user, case = _owned_case_for_modify(case_id, authorization)
+    try:
+        import numpy as np
+        mask, mask_path = _load_saved_mask(case_id, case)
+        if correction.sliceIndex < 0 or correction.sliceIndex >= mask.shape[0]:
+            raise DicomValidationError("Correction slice is outside the stored axial volume.")
+        for operation in correction.operations:
+            x = int(operation.get("x", -1))
+            y = int(operation.get("y", -1))
+            radius = int(operation.get("radius", 1))
+            value = 1 if bool(operation.get("add", True)) else 0
+            if radius < 1 or radius > 128:
+                raise DicomValidationError("Brush radius must be between 1 and 128 voxels.")
+            if x < 0 or y < 0 or x >= mask.shape[2] or y >= mask.shape[1]:
+                raise DicomValidationError("Correction coordinate is outside the stored slice.")
+            yy, xx = np.ogrid[:mask.shape[1], :mask.shape[2]]
+            brush = (xx - x) ** 2 + (yy - y) ** 2 <= radius ** 2
+            mask[correction.sliceIndex, brush] = value
+        np.savez_compressed(mask_path, mask=mask.astype(np.uint8))
+        job = dict(case.segmentationJob or {})
+        spacing = job.get("voxelSpacingMm", (case.imaging or {}).get("pixelSpacingMm", [1, 1]) + [(case.imaging or {}).get("sliceSpacingMm", 1)])
+        job.update({
+            "version": int(job.get("version", 1)) + 1,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "voxelCount": int(mask.sum()),
+            "segmentationVolumeMm3": round(float(mask.sum()) * float(spacing[0]) * float(spacing[1]) * float(spacing[2]), 3),
+            "manualCorrections": [*(job.get("manualCorrections") or []), correction.model_dump()],
+            "reconstructionStatus": "outdated",
+        })
+        case_store.update_case(case_id, {"segmentationJob": job, "status": "segmentation_completed"})
+        return job
+    except (DicomValidationError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Segmentation correction failed: {exc}") from exc
 
 
 @router.post("/cases/{case_id}/imaging/reconstruct")
@@ -339,22 +494,21 @@ async def reconstruct_case_ct(
     thresholdHu: float = 300.0,
     authorization: Optional[str] = Header(None),
 ):
-    """Extract and persist a patient-specific STL from the persisted CT volume."""
-    user = require_role([UserRole.DOCTOR, UserRole.ADMIN])(authorization)
-    case = case_store.get_case(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
-    if not case_store.user_can_modify_case(user, case):
-        raise HTTPException(status_code=403, detail=f"Access denied for research case '{case_id}'.")
-    imaging = case.imaging or {}
-    source_files = [str(name) for name in imaging.get("sourceFiles", [])]
-    if len(source_files) < 2:
+    """Extract and persist a patient-specific STL from the saved segmentation mask."""
+    user, case = _owned_case_for_modify(case_id, authorization)
+    paths = _series_paths(case_id, case)
+    if len(paths) < 2:
         raise HTTPException(status_code=400, detail="A single DICOM slice cannot be reconstructed as a 3D volume.")
-    series_dir = os.path.join(settings.DATA_DIR, "imaging", case_id)
-    paths = [os.path.join(series_dir, os.path.basename(name)) for name in source_files]
+    if not case.segmentationJob:
+        raise HTTPException(status_code=400, detail="Run and save segmentation before reconstruction.")
     try:
-        volume, analysis = load_volume_from_files(paths)
-        mesh_bytes, stats = extract_patient_space_mesh(volume, analysis, thresholdHu)
+        mask, _ = _load_saved_mask(case_id, case)
+        _, analysis = load_volume_from_files(paths)
+        mesh_bytes, stats = extract_patient_space_mesh_from_mask(
+            mask,
+            analysis,
+            (case.segmentationJob or {}).get("thresholdHu"),
+        )
     except (DicomValidationError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"Reconstruction failed: {exc}") from exc
 

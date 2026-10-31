@@ -411,10 +411,82 @@ def test_patient_ct_reconstruction_reports_empty_segmentation(auth_headers):
     ]
     upload = client.post(f"/api/cases/{case_id}/imaging/upload", files=files, headers=auth_headers)
     assert upload.status_code == 200
-    reconstruction = client.post(
-        f"/api/cases/{case_id}/imaging/reconstruct?thresholdHu=3000",
+    segmentation = client.post(
+        f"/api/cases/{case_id}/imaging/segmentation?thresholdHu=3000",
         headers=auth_headers,
     )
-    assert reconstruction.status_code == 422
-    assert "Segmentation is empty" in reconstruction.json()["detail"]
+    assert segmentation.status_code == 422
+    assert "Segmentation is empty" in segmentation.json()["detail"]
 
+
+def test_segmentation_preview_correction_and_mask_reconstruction(auth_headers):
+    create_res = client.post(
+        "/api/cases",
+        json={
+            "name": "CT Correction Subject",
+            "demographics": {"researchSubjectId": "SUBJ-CORRECT-01", "affectedSide": "right"},
+        },
+        headers=auth_headers,
+    )
+    case_id = create_res.json()["id"]
+    files = [
+        ("files", (f"slice_{index}.dcm", create_synthetic_dicom_bytes(
+            rows=16, cols=16, instance_number=index + 1, slice_location=float(index)
+        ), "application/dicom"))
+        for index in range(4)
+    ]
+    assert client.post(f"/api/cases/{case_id}/imaging/upload", files=files, headers=auth_headers).status_code == 200
+    segmented = client.post(f"/api/cases/{case_id}/imaging/segmentation?thresholdHu=300", headers=auth_headers)
+    assert segmented.status_code == 200
+    original_version = segmented.json()["version"]
+
+    preview = client.get(
+        f"/api/cases/{case_id}/imaging/segmentation/preview?orientation=coronal&sliceIndex=3",
+        headers=auth_headers,
+    )
+    assert preview.status_code == 200
+    assert preview.json()["ctPreviewUrl"].startswith("data:image/png;base64,")
+    assert preview.json()["maskPreviewUrl"].startswith("data:image/png;base64,")
+    assert preview.json()["spacingMm"] == [1.0, 0.75, 0.75]
+
+    correction = client.post(
+        f"/api/cases/{case_id}/imaging/segmentation/corrections",
+        json={
+            "sliceIndex": 0,
+            "operations": [{"x": 0, "y": 0, "radius": 1, "add": True}],
+        },
+        headers=auth_headers,
+    )
+    assert correction.status_code == 200
+    assert correction.json()["version"] == original_version + 1
+    assert correction.json()["reconstructionStatus"] == "outdated"
+    assert correction.json()["manualCorrections"]
+
+    rebuilt = client.post(f"/api/cases/{case_id}/imaging/reconstruct", headers=auth_headers)
+    assert rebuilt.status_code == 200
+    assert rebuilt.json()["mesh"]["surfaceAreaMm2"] > 0
+
+
+def test_segmentation_rejects_invalid_threshold_range(auth_headers):
+    create_res = client.post(
+        "/api/cases",
+        json={
+            "name": "Invalid Threshold Subject",
+            "demographics": {"researchSubjectId": "SUBJ-THRESHOLD-01", "affectedSide": "left"},
+        },
+        headers=auth_headers,
+    )
+    case_id = create_res.json()["id"]
+    files = [
+        ("files", (f"slice_{index}.dcm", create_synthetic_dicom_bytes(
+            rows=16, cols=16, instance_number=index + 1, slice_location=float(index)
+        ), "application/dicom"))
+        for index in range(2)
+    ]
+    assert client.post(f"/api/cases/{case_id}/imaging/upload", files=files, headers=auth_headers).status_code == 200
+    response = client.post(
+        f"/api/cases/{case_id}/imaging/segmentation?thresholdHu=500&maxThresholdHu=300",
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+    assert "lower than maximum" in response.json()["detail"]

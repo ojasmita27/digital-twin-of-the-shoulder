@@ -27,6 +27,8 @@
   "backend/tests/test_dicom.py::test_multi_slice_physical_sorting",
   "backend/tests/test_dicom.py::test_patient_ct_reconstruction_reports_empty_segmentation",
   "backend/tests/test_dicom.py::test_patient_ct_segmentation_and_reconstruction_persist",
+  "backend/tests/test_dicom.py::test_segmentation_preview_correction_and_mask_reconstruction",
+  "backend/tests/test_dicom.py::test_segmentation_rejects_invalid_threshold_range",
   "backend/tests/test_dicom.py::test_unregistered_endpoint_returns_generic_not_found",
   "backend/tests/test_dicom.py::test_upload_dicom_no_files",
   "backend/tests/test_dicom.py::test_upload_dicom_to_existing_case",

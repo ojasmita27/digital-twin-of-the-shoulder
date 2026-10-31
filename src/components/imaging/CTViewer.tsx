@@ -6,6 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { CTSliceMetadata } from '../../types/case';
 import { DicomSimulator, SliceOrientation, WINDOW_PRESETS } from '../../services/dicomSimulator';
+import { apiClient } from '../../services/apiClient';
 import {
   ZoomIn,
   ZoomOut,
@@ -22,14 +23,23 @@ import {
 
 interface CTViewerProps {
   metadata?: CTSliceMetadata;
+  caseId?: string;
   onSliceChange?: (sliceIndex: number) => void;
 }
 
-export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) => {
+export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceChange }) => {
   const [orientation, setOrientation] = useState<SliceOrientation>('axial');
   const [sliceIndex, setSliceIndex] = useState(1);
   const totalSlices = metadata?.sliceCount || 168;
   const isRealSeries = Boolean(metadata?.sourceFiles?.length);
+  const [realPreview, setRealPreview] = useState<{ ctPreviewUrl: string; maskPreviewUrl?: string | null } | null>(null);
+  const [showSegmentation, setShowSegmentation] = useState(true);
+  const [segmentationOpacity, setSegmentationOpacity] = useState(0.45);
+  const planeSliceCount = orientation === 'axial'
+    ? totalSlices
+    : orientation === 'coronal'
+      ? metadata?.rows || 1
+      : metadata?.columns || 1;
 
   const [windowWidth, setWindowWidth] = useState(metadata?.windowWidth || 1500);
   const [windowCenter, setWindowCenter] = useState(metadata?.windowCenter || 450);
@@ -48,12 +58,30 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    setSliceIndex((current) => Math.min(current, planeSliceCount));
+  }, [planeSliceCount]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isRealSeries || !caseId) {
+      setRealPreview(null);
+      return;
+    }
+    apiClient.getSegmentationPreview(caseId, orientation, Math.max(0, sliceIndex - 1), windowCenter, windowWidth).then((result) => {
+      if (!cancelled) setRealPreview(result.data || null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [caseId, isRealSeries, orientation, sliceIndex, windowCenter, windowWidth, metadata?.segmentationPreviewAvailable]);
+
   // Render slice to canvas when slice, orientation, window/level, or crosshair changes
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const axialPreview = metadata?.slicePreviewUrls?.[sliceIndex - 1] || metadata?.primaryPreviewUrl;
+    const axialPreview = realPreview?.ctPreviewUrl || metadata?.slicePreviewUrls?.[sliceIndex - 1] || metadata?.primaryPreviewUrl;
     if (axialPreview && orientation === 'axial') {
       const img = new Image();
       img.onload = () => {
@@ -69,6 +97,15 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
         const x = (canvas.width - w) / 2;
         const y = (canvas.height - h) / 2;
         ctx.drawImage(img, x, y, w, h);
+        if (showSegmentation && realPreview?.maskPreviewUrl) {
+          const maskImage = new Image();
+          maskImage.onload = () => {
+            ctx.globalAlpha = segmentationOpacity;
+            ctx.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
+            ctx.globalAlpha = 1;
+          };
+          maskImage.src = realPreview.maskPreviewUrl;
+        }
 
         if (showCrosshair) {
           ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
@@ -95,7 +132,7 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
       ctx.fillText(`${orientation.toUpperCase()} reconstruction preview is not available`, canvas.width / 2, canvas.height / 2 - 8);
       ctx.fillText('Use axial slices or run reconstruction after segmentation.', canvas.width / 2, canvas.height / 2 + 18);
     } else {
-      const normalizedSlice = Math.max(0, Math.min(1, sliceIndex / totalSlices));
+      const normalizedSlice = Math.max(0, Math.min(1, sliceIndex / planeSliceCount));
       DicomSimulator.renderSlice(
         canvas,
         orientation,
@@ -118,6 +155,10 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
     metadata?.primaryPreviewUrl,
     metadata?.slicePreviewUrls,
     isRealSeries,
+    realPreview,
+    showSegmentation,
+    segmentationOpacity,
+    planeSliceCount,
   ]);
 
   // Handle Preset change
@@ -135,7 +176,7 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
     e.preventDefault();
     const delta = Math.sign(e.deltaY);
     setSliceIndex((prev) => {
-      const next = Math.max(1, Math.min(totalSlices, prev + delta));
+      const next = Math.max(1, Math.min(planeSliceCount, prev + delta));
       if (onSliceChange) onSliceChange(next);
       return next;
     });
@@ -171,7 +212,12 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
     const pixelX = Math.round(nx * (metadata?.columns || 512));
     const pixelY = Math.round(ny * (metadata?.rows || 512));
 
-    // Simulated regional HU probe
+    if (isRealSeries) {
+      setProbeInfo(null);
+      return;
+    }
+
+    // Demo-only probe for the synthetic reference case.
     let estimatedHU = -950;
     let region = 'Air / Background';
     const distToCenter = Math.hypot(nx - 0.5, ny - 0.5);
@@ -256,6 +302,15 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
 
         {/* Viewport Action Icons */}
         <div className="flex items-center gap-1">
+          {isRealSeries && realPreview?.maskPreviewUrl && (
+            <button
+              onClick={() => setShowSegmentation((visible) => !visible)}
+              className={`px-2 py-0.5 rounded text-[11px] font-mono ${showSegmentation ? 'bg-amber-500/20 text-amber-300' : 'text-slate-400'}`}
+              title="Toggle saved segmentation overlay"
+            >
+              MASK {showSegmentation ? 'ON' : 'OFF'}
+            </button>
+          )}
           <button
             onClick={() => setZoom((z) => Math.min(3.0, z + 0.2))}
             className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
@@ -335,7 +390,7 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
         {/* Top-Left Telemetry Overlay */}
         <div className="absolute top-3 left-3 bg-slate-900/80 border border-slate-800 p-2 rounded text-[11px] font-mono text-slate-300 pointer-events-none space-y-0.5">
           <div>
-            SLICE: <span className="text-cyan-400">{sliceIndex}</span> / {totalSlices}
+            SLICE: <span className="text-cyan-400">{sliceIndex}</span> / {planeSliceCount}
           </div>
           <div>
             THICKNESS: <span className="text-slate-100">{metadata.sliceThicknessMm.toFixed(2)} mm</span>
@@ -370,6 +425,19 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
           </div>
           <div className="text-[10px] text-slate-500">KERNEL: {metadata.reconstructionKernel}</div>
         </div>
+        {isRealSeries && realPreview?.maskPreviewUrl && showSegmentation && (
+          <label className="absolute bottom-20 right-3 bg-slate-900/90 border border-slate-800 p-2 rounded text-[11px] font-mono text-slate-300 flex items-center gap-2">
+            MASK OPACITY
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={segmentationOpacity}
+              onChange={(event) => setSegmentationOpacity(Number(event.target.value))}
+            />
+          </label>
+        )}
 
         {/* Slide-out Technical DICOM Metadata Drawer */}
         {showMetadataDrawer && (
@@ -431,10 +499,10 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
             <ChevronLeft className="w-4 h-4" />
           </button>
           <span className="font-mono text-slate-300 text-xs tabular-nums">
-            {sliceIndex} / {totalSlices}
+            {sliceIndex} / {planeSliceCount}
           </span>
           <button
-            onClick={() => setSliceIndex((s) => Math.min(totalSlices, s + 1))}
+            onClick={() => setSliceIndex((s) => Math.min(planeSliceCount, s + 1))}
             className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
           >
             <ChevronRight className="w-4 h-4" />
@@ -447,7 +515,7 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
           <input
             type="range"
             min="1"
-            max={totalSlices}
+            max={planeSliceCount}
             value={sliceIndex}
             onChange={(e) => {
               const val = Number(e.target.value);

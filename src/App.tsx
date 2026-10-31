@@ -265,6 +265,14 @@ export default function App() {
           {currentRoute === 'segmentation' && (
             <SegmentationView
               activeCase={activeCase}
+              onUpdateJob={(job) => {
+                if (activeCase) {
+                  caseStorage.updateCase(activeCase.id, {
+                    segmentationJob: job,
+                    status: 'segmentation_completed',
+                  });
+                }
+              }}
               onNavigateToAnatomy={() => setCurrentRoute('anatomy3d')}
             />
           )}

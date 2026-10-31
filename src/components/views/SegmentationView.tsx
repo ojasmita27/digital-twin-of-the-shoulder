@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ResearchCase, SegmentationJob } from '../../types/case';
 import { apiClient } from '../../services/apiClient';
+import { caseStorage } from '../../services/caseStorage';
 import { ANATOMY_IMAGES } from '../../assets/anatomyImages';
 import {
   Cpu,
@@ -38,8 +39,16 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
     'humerus',
   ]);
   const [thresholdHu, setThresholdHu] = useState(300);
+  const [maxThresholdHu, setMaxThresholdHu] = useState<number | undefined>(undefined);
   const [processing, setProcessing] = useState(false);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
+  const [editSlice, setEditSlice] = useState(0);
+  const [brushRadius, setBrushRadius] = useState(4);
+  const [editMode, setEditMode] = useState<'add' | 'remove'>('add');
+  const [pendingOperations, setPendingOperations] = useState<Array<{ x: number; y: number; radius: number; add: boolean }>>([]);
+  const [redoOperations, setRedoOperations] = useState<Array<{ x: number; y: number; radius: number; add: boolean }>>([]);
+  const [preview, setPreview] = useState<{ ctPreviewUrl: string; maskPreviewUrl?: string | null } | null>(null);
+  const editorRef = useRef<HTMLCanvasElement>(null);
 
   const toggleStructure = (struct: 'scapula' | 'humerus' | 'clavicle') => {
     setSelectedStructures((prev) =>
@@ -53,7 +62,12 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
     if (!activeCase || activeCase.isDemo || !imaging?.sourceFiles?.length) return;
     setProcessing(true);
     setResultMessage(null);
-    const result = await apiClient.segmentCase(activeCase.id, thresholdHu);
+    if (maxThresholdHu !== undefined && thresholdHu >= maxThresholdHu) {
+      setResultMessage('Minimum threshold must be lower than maximum threshold.');
+      setProcessing(false);
+      return;
+    }
+    const result = await apiClient.segmentCase(activeCase.id, thresholdHu, maxThresholdHu);
     if (!result.data) {
       setResultMessage(result.error || 'Segmentation failed.');
       setProcessing(false);
@@ -61,13 +75,103 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
     }
     const job = result.data as unknown as SegmentationJob;
     onUpdateJob?.(job);
-    const reconstruction = await apiClient.reconstructCase(activeCase.id, thresholdHu);
-    setResultMessage(
-      reconstruction.data
-        ? 'Patient CT segmentation and surface reconstruction completed. Inspect the mask and mesh before research use.'
-        : reconstruction.error || 'Segmentation completed, but reconstruction failed.'
-    );
+    setResultMessage('Segmentation mask saved from the uploaded CT. Inspect or correct it before rebuilding the patient mesh.');
     setProcessing(false);
+  };
+
+  const rebuildModel = async () => {
+    if (!activeCase) return;
+    setProcessing(true);
+    const result = await apiClient.reconstructCase(activeCase.id, thresholdHu);
+    if (result.data && activeCase.segmentationJob) {
+      onUpdateJob?.({ ...activeCase.segmentationJob, reconstructionStatus: 'completed' });
+      const refreshedCase = await apiClient.getCaseById(activeCase.id);
+      if (refreshedCase.data) caseStorage.addOrUpdateCase(refreshedCase.data);
+    }
+    setResultMessage(result.data
+      ? 'Patient mesh rebuilt from the saved segmentation mask.'
+      : result.error || 'Reconstruction failed.');
+    setProcessing(false);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeCase || !activeCase.segmentationJob || !activeCase.imaging?.sourceFiles?.length) {
+      setPreview(null);
+      return;
+    }
+    apiClient.getSegmentationPreview(activeCase.id, 'axial', editSlice).then((response) => {
+      if (!cancelled) setPreview(response.data || null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCase?.id, activeCase?.segmentationJob?.version, activeCase?.imaging?.sourceFiles, editSlice]);
+
+  useEffect(() => {
+    const canvas = editorRef.current;
+    if (!canvas || !preview) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const ct = new Image();
+    const mask = new Image();
+    let loaded = 0;
+    const draw = () => {
+      loaded += 1;
+      if (loaded < 2) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(ct, 0, 0, canvas.width, canvas.height);
+      if (preview.maskPreviewUrl) {
+        ctx.globalAlpha = 0.45;
+        ctx.drawImage(mask, 0, 0, canvas.width, canvas.height);
+        ctx.globalAlpha = 1;
+      }
+      pendingOperations.forEach((operation) => {
+        ctx.fillStyle = operation.add ? 'rgba(34, 197, 94, 0.55)' : 'rgba(239, 68, 68, 0.55)';
+        ctx.beginPath();
+        const columns = activeCase?.imaging?.columns || 512;
+        const rows = activeCase?.imaging?.rows || 512;
+        ctx.arc(
+          operation.x * 512 / columns,
+          operation.y * 512 / rows,
+          operation.radius * 512 / columns,
+          0,
+          Math.PI * 2,
+        );
+        ctx.fill();
+      });
+    };
+    ct.onload = draw;
+    mask.onload = draw;
+    ct.src = preview.ctPreviewUrl;
+    mask.src = preview.maskPreviewUrl || preview.ctPreviewUrl;
+  }, [preview, pendingOperations]);
+
+  const applyBrush = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = editorRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const operation = {
+      x: Math.round(((event.clientX - rect.left) / rect.width) * (activeCase?.imaging?.columns || 512)),
+      y: Math.round(((event.clientY - rect.top) / rect.height) * (activeCase?.imaging?.rows || 512)),
+      radius: Math.max(1, Math.round(brushRadius * (activeCase?.imaging?.columns || 512) / 512)),
+      add: editMode === 'add',
+    };
+    setPendingOperations((operations) => [...operations, operation]);
+    setRedoOperations([]);
+  };
+
+  const saveCorrections = async () => {
+    if (!activeCase || pendingOperations.length === 0) return;
+    const result = await apiClient.correctSegmentation(activeCase.id, editSlice, pendingOperations);
+    if (result.data) {
+      onUpdateJob?.(result.data as unknown as SegmentationJob);
+      setPendingOperations([]);
+      setRedoOperations([]);
+      setResultMessage('Corrected segmentation saved. Any previous mesh is now outdated.');
+    } else {
+      setResultMessage(result.error || 'Corrected segmentation could not be saved.');
+    }
   };
 
   return (
@@ -116,6 +220,14 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
             >
               <span>Switch to 3D Reconstruction & STL Loader</span>
               <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              disabled={processing || !activeCase?.segmentationJob}
+              onClick={rebuildModel}
+              className="w-full rounded border border-cyan-600 px-3 py-2 text-xs font-semibold text-cyan-700 dark:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {processing ? 'Rebuilding patient mesh...' : 'Rebuild mesh from saved mask'}
             </button>
           </div>
         )}
@@ -211,6 +323,17 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
                   className="w-24 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-right"
                 />
               </div>
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="max-threshold-hu">Maximum threshold (HU)</label>
+                <input
+                  id="max-threshold-hu"
+                  type="number"
+                  placeholder="optional"
+                  value={maxThresholdHu ?? ''}
+                  onChange={(event) => setMaxThresholdHu(event.target.value ? Number(event.target.value) : undefined)}
+                  className="w-24 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-right"
+                />
+              </div>
               <button
                 type="button"
                 disabled={processing || !activeCase || activeCase.isDemo || !imaging?.sourceFiles?.length}
@@ -220,6 +343,41 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
                 {processing ? 'Processing CT volume...' : 'Segment and reconstruct uploaded CT'}
               </button>
               {resultMessage && <p className="text-[11px] text-slate-600 dark:text-slate-400">{resultMessage}</p>}
+              {activeCase?.segmentationJob && (
+                <div className="border-t border-slate-200 dark:border-slate-800 pt-3 space-y-2 text-[11px]">
+                  <div className="flex justify-between"><span>Mask version</span><span>{activeCase.segmentationJob.version || 1}</span></div>
+                  <div className="flex justify-between"><span>Segmented voxels</span><span>{activeCase.segmentationJob.voxelCount ?? 'unknown'}</span></div>
+                  <div className="flex justify-between"><span>Volume</span><span>{activeCase.segmentationJob.segmentationVolumeMm3 ?? 'unknown'} mm³</span></div>
+                  <div className="flex justify-between"><span>Mask status</span><span>{activeCase.segmentationJob.reconstructionStatus === 'outdated' ? 'Mesh outdated' : 'Saved'}</span></div>
+                </div>
+              )}
+            </div>
+
+            <div className="lg:col-span-2 bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-mono text-slate-300">AXIAL MASK CORRECTION · 2D SLICE PROTOTYPE</div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setEditMode('add')} className={`px-2 py-1 text-[11px] rounded ${editMode === 'add' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300'}`}>ADD</button>
+                  <button type="button" onClick={() => setEditMode('remove')} className={`px-2 py-1 text-[11px] rounded ${editMode === 'remove' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-300'}`}>REMOVE</button>
+                </div>
+              </div>
+              {activeCase?.segmentationJob && preview ? (
+                <>
+                  <canvas ref={editorRef} width={512} height={512} onPointerDown={applyBrush} className="w-full max-w-[512px] mx-auto border border-slate-700 cursor-crosshair touch-none" />
+                  <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-300">
+                    <label>Slice <input type="number" min="0" max={(activeCase.imaging?.sliceCount || 1) - 1} value={editSlice} onChange={(event) => setEditSlice(Number(event.target.value))} className="w-14 bg-slate-900 border border-slate-700 px-1" /></label>
+                    <label>Brush <input type="range" min="1" max="32" value={brushRadius} onChange={(event) => setBrushRadius(Number(event.target.value))} /></label>
+                    <button type="button" onClick={() => setPendingOperations((operations) => { if (!operations.length) return operations; const next = [...operations]; const last = next.pop(); if (last) setRedoOperations((redo) => [...redo, last]); return next; })} disabled={!pendingOperations.length} className="px-2 py-1 bg-slate-800 rounded disabled:opacity-40">UNDO</button>
+                    <button type="button" onClick={() => setRedoOperations((redo) => { if (!redo.length) return redo; const next = [...redo]; const last = next.pop(); if (last) setPendingOperations((operations) => [...operations, last]); return next; })} disabled={!redoOperations.length} className="px-2 py-1 bg-slate-800 rounded disabled:opacity-40">REDO</button>
+                    <button type="button" onClick={() => { setPendingOperations([]); setRedoOperations([]); }} className="px-2 py-1 bg-slate-800 rounded">CLEAR</button>
+                    <button type="button" onClick={() => setResultMessage('Local correction changes applied to the editing session. Save to persist them.')} className="px-2 py-1 bg-cyan-700 rounded">APPLY CHANGES</button>
+                    <button type="button" onClick={saveCorrections} disabled={!pendingOperations.length} className="px-2 py-1 bg-emerald-700 rounded disabled:opacity-40">SAVE CORRECTED MASK</button>
+                    <button type="button" onClick={() => { setPendingOperations([]); setRedoOperations([]); }} className="px-2 py-1 bg-amber-700 rounded">CANCEL</button>
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-slate-500">Run segmentation on a real uploaded CT volume to enable correction. Original DICOM pixels remain unchanged.</p>
+              )}
             </div>
           </div>
         </div>

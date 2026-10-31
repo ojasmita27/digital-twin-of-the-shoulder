@@ -314,7 +314,7 @@ export const ImagingView: React.FC<ImagingViewProps> = ({
 
         {/* SECTION B: Interactive CT Canvas Viewer (Right 3 Cols) */}
         <div className="lg:col-span-3">
-          <CTViewer metadata={imaging} />
+          <CTViewer metadata={imaging} caseId={activeCase?.id} />
         </div>
       </div>
 
