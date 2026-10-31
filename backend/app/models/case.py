@@ -50,6 +50,8 @@ class ResearchCase(BaseModel):
     measurements: Optional[Dict[str, Any]] = None
     implantPlan: Optional[Dict[str, Any]] = None
     reports: List[Dict[str, Any]] = Field(default_factory=list)
+    createdByUserId: Optional[str] = None
+
 
 
 class BackendHealthResponse(BaseModel):

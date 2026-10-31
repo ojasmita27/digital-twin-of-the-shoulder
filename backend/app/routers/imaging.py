@@ -6,10 +6,12 @@ and 3D reconstruction feasibility assessment.
 """
 
 from typing import List, Optional, Dict, Any, Tuple
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, HTTPException, status, Header, Request
 from pydantic import BaseModel
 
 from ..storage import case_store
+from ..models.user import UserProfile, UserRole
+from ..dependencies import get_current_user, require_role
 from ..services.dicom_service import (
     parse_dicom_dataset,
     extract_safe_metadata,
@@ -19,6 +21,7 @@ from ..services.dicom_service import (
 )
 
 router = APIRouter(prefix="/api", tags=["imaging"])
+
 
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB per file limit
 
@@ -175,17 +178,27 @@ async def process_uploaded_dicom_files(files: List[UploadFile]) -> DicomUploadRe
 async def upload_case_dicom(
     case_id: str,
     files: List[UploadFile] = File(...),
+    authorization: Optional[str] = Header(None),
+    request: Request = None,
 ):
     """
     Upload real DICOM (.dcm) files for a specific research case.
-    Validates DICOM structure, extracts safe non-identifying geometry metadata,
-    renders slice pixels, and updates the case record.
+    Requires Doctor (owner) or Admin privileges.
+    Enforces case ownership isolation.
     """
+    user = require_role([UserRole.DOCTOR, UserRole.ADMIN])(authorization)
+
     case = case_store.get_case(case_id)
     if not case:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Research case '{case_id}' was not found in storage.",
+        )
+
+    if not case_store.user_can_modify_case(user, case):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied. You do not have permission to upload imaging to case '{case_id}'.",
         )
 
     response = await process_uploaded_dicom_files(files)
@@ -227,6 +240,20 @@ async def upload_case_dicom(
         },
     )
 
+    case_store.log_audit(
+        action="DICOM_SERIES_UPLOADED",
+        resource_type="imaging",
+        resource_id=case_id,
+        user_id=user.id,
+        user_email=user.email,
+        details={
+            "seriesInstanceUid": response.seriesInstanceUid,
+            "sliceCount": response.sliceCount,
+            "modality": response.modality,
+        },
+        ip_address=request.client.host if request and request.client else None,
+    )
+
     return response
 
 
@@ -234,22 +261,36 @@ async def upload_case_dicom(
 @router.post("/imaging/upload/", response_model=DicomUploadResponse, include_in_schema=False)
 async def upload_standalone_dicom(
     files: List[UploadFile] = File(...),
+    authorization: Optional[str] = Header(None),
 ):
     """
     Upload and parse DICOM (.dcm) files without binding to a case.
-    Useful for standalone CT slice inspection and metadata verification.
+    Requires authentication (Doctor, Researcher, or Admin).
     """
+    get_current_user(authorization)
     return await process_uploaded_dicom_files(files)
 
 
 @router.get("/cases/{case_id}/imaging")
 @router.get("/cases/{case_id}/imaging/", include_in_schema=False)
-def get_case_imaging(case_id: str):
+def get_case_imaging(
+    case_id: str,
+    authorization: Optional[str] = Header(None),
+):
     """Retrieve ingested imaging metadata for a specific research case."""
+    user = get_current_user(authorization)
     case = case_store.get_case(case_id)
     if not case:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Research case '{case_id}' was not found in storage.",
         )
+
+    if not case_store.user_can_access_case(user, case):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied. You do not have permission to view imaging for case '{case_id}'.",
+        )
+
     return case.imaging or {}
+
