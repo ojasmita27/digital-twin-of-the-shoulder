@@ -17,7 +17,7 @@ export interface BackendHealthResponse {
 }
 
 export interface ApiContractDefinition {
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   endpoint: string;
   summary: string;
   description: string;
@@ -31,4 +31,41 @@ export interface BackendConfig {
   apiKey?: string;
   timeoutMs: number;
   useMockFallbackForReview: boolean;
+}
+
+export interface SliceInfo {
+  filename: string;
+  instanceNumber: number;
+  sliceLocation?: number;
+  sliceThicknessMm: number;
+  pixelSpacingMm: [number, number];
+  rows: number;
+  columns: number;
+  hasPixelData: boolean;
+  previewDataUrl?: string;
+}
+
+export interface DicomUploadResponse {
+  success: boolean;
+  message?: string;
+  caseId?: string;
+  fileCount: number;
+  totalSizeBytes: number;
+  modality: string;
+  seriesInstanceUid: string;
+  studyInstanceUid: string;
+  sliceCount: number;
+  sliceThicknessMm: number;
+  pixelSpacingMm: [number, number];
+  rows: number;
+  columns: number;
+  windowCenter: number;
+  windowWidth: number;
+  reconstructionKernel: string;
+  acquisitionDate: string;
+  isVolumetricSeries: boolean;
+  reconstructionReadiness: string;
+  reconstructionMessage: string;
+  slices: SliceInfo[];
+  primaryPreviewUrl?: string;
 }

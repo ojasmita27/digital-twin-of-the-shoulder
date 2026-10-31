@@ -26,7 +26,7 @@ export interface PatientDemographics {
 }
 
 export interface CTSliceMetadata {
-  modality: 'CT';
+  modality: 'CT' | string;
   seriesInstanceUid: string;
   studyInstanceUid: string;
   sliceThicknessMm: number;
@@ -34,13 +34,21 @@ export interface CTSliceMetadata {
   rows: number;
   columns: number;
   sliceCount: number;
-  kvp: number;
-  tubeCurrentMa: number;
-  gantryTiltDeg: number;
+  kvp?: number;
+  tubeCurrentMa?: number;
+  gantryTiltDeg?: number;
   reconstructionKernel: string;
   windowCenter: number;
   windowWidth: number;
   acquisitionDate?: string;
+  isVolumetricSeries?: boolean;
+  reconstructionReadiness?: string;
+  reconstructionMessage?: string;
+  primaryPreviewUrl?: string;
+  fileCount?: number;
+  uploadedFiles?: string[];
+  sliceLocation?: number;
+  instanceNumber?: number;
 }
 
 export interface AnatomicalLandmark {

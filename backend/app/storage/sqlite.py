@@ -18,6 +18,17 @@ from ..config import settings
 from ..models.case import ResearchCase, CaseCreateRequest, CaseStatus, PatientDemographics, AnatomicalSide
 
 
+def _dump_model(model: Any) -> Dict[str, Any]:
+    """Resilient Pydantic v1 (.dict()) and v2 (.model_dump()) serializer."""
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    if hasattr(model, "dict"):
+        return model.dict()
+    if isinstance(model, dict):
+        return model
+    return dict(model)
+
+
 class SqliteCaseStore:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or settings.DATABASE_PATH
@@ -130,7 +141,7 @@ class SqliteCaseStore:
         case_id = f"SHL-2026-{timestamp_slug}"
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        demographics_json = json.dumps(req.demographics.model_dump())
+        demographics_json = json.dumps(_dump_model(req.demographics))
         is_demo_int = 1 if req.isDemo else 0
 
         with self._get_connection() as conn:
@@ -186,7 +197,7 @@ class SqliteCaseStore:
         if isinstance(demographics, dict):
             demographics = PatientDemographics(**demographics)
 
-        demographics_json = json.dumps(demographics.model_dump())
+        demographics_json = json.dumps(_dump_model(demographics))
 
         imaging = updates.get("imaging", existing.imaging)
         imaging_json = json.dumps(imaging) if imaging is not None else None

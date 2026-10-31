@@ -7,5 +7,17 @@
   "backend/tests/test_api.py::test_list_cases_empty",
   "backend/tests/test_api.py::test_nested_field_serialization_and_updates",
   "backend/tests/test_api.py::test_persistence_across_reinitialization",
-  "backend/tests/test_api.py::test_root"
+  "backend/tests/test_api.py::test_root",
+  "backend/tests/test_dicom.py::test_multi_slice_deduplication",
+  "backend/tests/test_dicom.py::test_multi_slice_gap_detection",
+  "backend/tests/test_dicom.py::test_multi_slice_mismatched_series_rejected",
+  "backend/tests/test_dicom.py::test_multi_slice_physical_sorting",
+  "backend/tests/test_dicom.py::test_unregistered_endpoint_returns_generic_not_found",
+  "backend/tests/test_dicom.py::test_upload_dicom_no_files",
+  "backend/tests/test_dicom.py::test_upload_dicom_to_existing_case",
+  "backend/tests/test_dicom.py::test_upload_dicom_to_nonexistent_case",
+  "backend/tests/test_dicom.py::test_upload_dicom_trailing_slash_support",
+  "backend/tests/test_dicom.py::test_upload_invalid_non_dicom_file",
+  "backend/tests/test_dicom.py::test_upload_valid_single_slice_dicom",
+  "backend/tests/test_dicom.py::test_volumetric_readiness_30_contiguous_slices"
 ]

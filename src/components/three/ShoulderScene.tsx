@@ -26,6 +26,7 @@ import {
   Info,
   Sliders,
 } from 'lucide-react';
+import { useTheme } from '../../context/ThemeContext';
 
 export type CameraPreset =
   | 'anterior'
@@ -72,6 +73,9 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   // Lighting refs
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
   const hemiLightRef = useRef<THREE.HemisphereLight | null>(null);
+
+  // Theme context
+  const { theme } = useTheme();
 
   // Interactive UI state
   const [shadingMode, setShadingMode] = useState<ShadingMode>('bone_ivory');
@@ -215,6 +219,33 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       }
     };
   }, []);
+
+  // Update Theme in Three.js Scene
+  useEffect(() => {
+    if (!sceneRef.current) return;
+    const scene = sceneRef.current;
+    if (theme === 'light') {
+      scene.background = new THREE.Color('#f8fafc');
+      if (hemiLightRef.current) {
+        hemiLightRef.current.color.setHex(0xffffff);
+        hemiLightRef.current.groundColor.setHex(0xcbd5e1);
+        hemiLightRef.current.intensity = 0.9;
+      }
+      if (dirLightRef.current) {
+        dirLightRef.current.intensity = 1.35;
+      }
+    } else {
+      scene.background = new THREE.Color('#070b12');
+      if (hemiLightRef.current) {
+        hemiLightRef.current.color.setHex(0xe0f2fe);
+        hemiLightRef.current.groundColor.setHex(0x090d16);
+        hemiLightRef.current.intensity = 0.7;
+      }
+      if (dirLightRef.current) {
+        dirLightRef.current.intensity = 1.2;
+      }
+    }
+  }, [theme]);
 
   // Update landmarks
   useEffect(() => {
@@ -417,8 +448,8 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`relative w-full h-full min-h-[540px] bg-slate-950 select-none overflow-hidden flex flex-col ${
-        isFullscreen ? 'fixed inset-0 z-50' : 'rounded-lg border border-slate-800'
+      className={`relative w-full h-full min-h-[540px] bg-slate-50 dark:bg-slate-950 select-none overflow-hidden flex flex-col ${
+        isFullscreen ? 'fixed inset-0 z-50' : 'rounded-lg border border-slate-200 dark:border-slate-800 shadow-xs'
       }`}
     >
       {/* 3D WebGL Canvas Mount Container */}
@@ -426,46 +457,46 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
 
       {/* Top Left: Anatomical Orientation & Preset Badge */}
       <div className="absolute top-4 left-4 flex flex-col gap-2 pointer-events-none">
-        <div className="bg-slate-900/90 border border-slate-800 px-3 py-1.5 rounded text-xs backdrop-blur-none flex items-center gap-2 pointer-events-auto">
-          <span className="text-slate-400 font-medium">View Preset:</span>
-          <span className="text-cyan-400 font-mono capitalize">{activePreset.replace('_', ' ')}</span>
-          <span className="text-slate-600">·</span>
-          <span className="text-slate-400 font-mono text-[11px]">
+        <div className="bg-white/95 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 px-3 py-1.5 rounded-md text-xs backdrop-blur-xs flex items-center gap-2 pointer-events-auto shadow-xs text-slate-800 dark:text-slate-200">
+          <span className="text-slate-500 dark:text-slate-400 font-medium">View Preset:</span>
+          <span className="text-teal-700 dark:text-cyan-400 font-mono font-semibold capitalize">{activePreset.replace('_', ' ')}</span>
+          <span className="text-slate-300 dark:text-slate-600">·</span>
+          <span className="text-slate-500 dark:text-slate-400 font-mono text-[11px]">
             {loadedCustomName ? `Custom STL: ${loadedCustomName}` : 'Synthetic Reconstruction (DEMO)'}
           </span>
         </div>
 
         {/* Hovered Landmark Info Callout */}
         {hoveredLandmark && (
-          <div className="bg-slate-900/95 border border-cyan-500/40 p-2.5 rounded text-xs shadow-lg max-w-xs pointer-events-auto">
-            <div className="font-semibold text-slate-100">{hoveredLandmark.name}</div>
-            <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+          <div className="bg-white/95 dark:bg-slate-900/95 border border-teal-500/40 dark:border-cyan-500/40 p-2.5 rounded-md text-xs shadow-lg max-w-xs pointer-events-auto">
+            <div className="font-semibold text-slate-900 dark:text-slate-100">{hoveredLandmark.name}</div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
               X: {hoveredLandmark.coordinatesMm[0].toFixed(1)} · Y: {hoveredLandmark.coordinatesMm[1].toFixed(1)} · Z:{' '}
               {hoveredLandmark.coordinatesMm[2].toFixed(1)} mm
             </div>
             {hoveredLandmark.validationNotes && (
-              <div className="text-[11px] text-cyan-300/80 mt-1">{hoveredLandmark.validationNotes}</div>
+              <div className="text-[11px] text-teal-700 dark:text-cyan-300/80 mt-1">{hoveredLandmark.validationNotes}</div>
             )}
           </div>
         )}
       </div>
 
       {/* Top Right: Quick Viewport Utilities */}
-      <div className="absolute top-4 right-4 flex items-center gap-1.5 bg-slate-900/90 border border-slate-800 p-1 rounded z-10">
+      <div className="absolute top-4 right-4 flex items-center gap-1.5 bg-white/95 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 p-1 rounded-md z-10 shadow-xs">
         <label
-          className="flex items-center gap-1 px-2.5 py-1 text-xs text-slate-300 hover:text-white hover:bg-slate-800 rounded cursor-pointer transition-colors"
+          className="flex items-center gap-1 px-2.5 py-1 text-xs text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer transition-colors"
           title="Import Patient STL Mesh"
         >
-          <Upload className="w-3.5 h-3.5 text-cyan-400" />
+          <Upload className="w-3.5 h-3.5 text-teal-600 dark:text-cyan-400" />
           <span className="font-medium">Import STL</span>
           <input type="file" accept=".stl" className="hidden" onChange={handleFileUpload} />
         </label>
 
-        <div className="h-4 w-px bg-slate-800 mx-1" />
+        <div className="h-4 w-px bg-slate-200 dark:bg-slate-800 mx-1" />
 
         <button
           onClick={handleResetCamera}
-          className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors"
+          className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded transition-colors"
           title="Reset Camera Target"
         >
           <RotateCcw className="w-3.5 h-3.5" />
@@ -473,31 +504,31 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
 
         <button
           onClick={toggleFullscreen}
-          className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors"
+          className="p-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded transition-colors"
           title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen 3D View'}
         >
           {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
         </button>
       </div>
 
-      {/* Unified Bottom Control Dock (Follows Ergonomic Dock Directive: Zero Viewport Occlusion) */}
+      {/* Unified Bottom Control Dock */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[95%] max-w-4xl z-20 flex flex-col items-center">
         {/* Collapse / Expand Toggle */}
         <button
           onClick={() => setHudCollapsed(!hudCollapsed)}
-          className="mb-1 flex items-center gap-1 px-3 py-0.5 text-[11px] font-medium bg-slate-900/95 border border-slate-800 text-slate-400 hover:text-slate-200 rounded-t transition-colors shadow-sm"
+          className="mb-1 flex items-center gap-1 px-3 py-0.5 text-[11px] font-medium bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 rounded-t transition-colors shadow-xs"
         >
           {hudCollapsed ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
           <span>{hudCollapsed ? 'Show 3D Controls' : 'Hide Controls'}</span>
         </button>
 
         {!hudCollapsed && (
-          <div className="w-full bg-slate-900/95 border border-slate-800 p-2.5 rounded-lg shadow-2xl flex flex-col gap-2.5">
+          <div className="w-full bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-800 p-2.5 rounded-lg shadow-xl flex flex-col gap-2.5 transition-colors">
             {/* Row 1: Camera Presets & Display Modes */}
             <div className="flex items-center justify-between gap-3 text-xs overflow-x-auto pb-1">
               {/* Presets Segmented Bar */}
               <div className="flex items-center gap-1 shrink-0">
-                <span className="text-[11px] text-slate-500 font-mono mr-1">PRESET:</span>
+                <span className="text-[11px] text-slate-400 dark:text-slate-500 font-mono mr-1">PRESET:</span>
                 {(
                   [
                     ['anterior', 'Anterior'],
@@ -512,8 +543,8 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
                     onClick={() => applyCameraPreset(key)}
                     className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap ${
                       activePreset === key
-                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                        ? 'bg-teal-50 dark:bg-cyan-500/20 text-teal-800 dark:text-cyan-300 border border-teal-200 dark:border-cyan-500/40 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
                     }`}
                   >
                     {label}
@@ -523,7 +554,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
 
               {/* Shading Mode Swatches */}
               <div className="flex items-center gap-1 shrink-0">
-                <span className="text-[11px] text-slate-500 font-mono mr-1">SHADING:</span>
+                <span className="text-[11px] text-slate-400 dark:text-slate-500 font-mono mr-1">SHADING:</span>
                 {(
                   [
                     ['bone_ivory', 'Bone PBR'],
@@ -537,8 +568,8 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
                     onClick={() => setShadingMode(mode)}
                     className={`px-2 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap ${
                       shadingMode === mode
-                        ? 'bg-slate-800 text-slate-100 border border-slate-700'
-                        : 'text-slate-400 hover:text-slate-200'
+                        ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-300 dark:border-slate-700 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                     }`}
                   >
                     {label}
@@ -548,46 +579,46 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
             </div>
 
             {/* Row 2: Anatomy Visibility & Joint Distraction Slider */}
-            <div className="flex items-center justify-between gap-4 pt-2 border-t border-slate-800/80 text-xs">
+            <div className="flex items-center justify-between gap-4 pt-2 border-t border-slate-100 dark:border-slate-800/80 text-xs">
               {/* Visibility Toggles */}
               <div className="flex items-center gap-3">
-                <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-white">
+                <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white">
                   <input
                     type="checkbox"
                     checked={scapulaVisible}
                     onChange={(e) => setScapulaVisible(e.target.checked)}
-                    className="rounded border-slate-700 text-cyan-500 focus:ring-0"
+                    className="rounded border-slate-300 dark:border-slate-700 text-teal-600 dark:text-cyan-500 focus:ring-0"
                   />
                   <span>Scapula</span>
                 </label>
 
-                <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-white">
+                <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white">
                   <input
                     type="checkbox"
                     checked={humerusVisible}
                     onChange={(e) => setHumerusVisible(e.target.checked)}
-                    className="rounded border-slate-700 text-cyan-500 focus:ring-0"
+                    className="rounded border-slate-300 dark:border-slate-700 text-teal-600 dark:text-cyan-500 focus:ring-0"
                   />
                   <span>Humerus</span>
                 </label>
 
-                <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-white">
+                <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white">
                   <input
                     type="checkbox"
                     checked={showLandmarks}
                     onChange={(e) => setShowLandmarks(e.target.checked)}
-                    className="rounded border-slate-700 text-cyan-500 focus:ring-0"
+                    className="rounded border-slate-300 dark:border-slate-700 text-teal-600 dark:text-cyan-500 focus:ring-0"
                   />
-                  <MapPin className="w-3 h-3 text-cyan-400" />
+                  <MapPin className="w-3 h-3 text-teal-600 dark:text-cyan-400" />
                   <span>Landmarks</span>
                 </label>
 
-                <label className="flex items-center gap-1.5 cursor-pointer text-slate-400 hover:text-slate-300">
+                <label className="flex items-center gap-1.5 cursor-pointer text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300">
                   <input
                     type="checkbox"
                     checked={showGrid}
                     onChange={(e) => setShowGrid(e.target.checked)}
-                    className="rounded border-slate-700 text-cyan-500 focus:ring-0"
+                    className="rounded border-slate-300 dark:border-slate-700 text-teal-600 dark:text-cyan-500 focus:ring-0"
                   />
                   <span>Grid</span>
                 </label>
@@ -595,7 +626,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
 
               {/* Exploded / Joint Distraction Slider */}
               <div className="flex items-center gap-2">
-                <span className="text-[11px] text-slate-400 font-mono whitespace-nowrap">JOINT DISTRACTION:</span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 font-mono whitespace-nowrap">JOINT DISTRACTION:</span>
                 <input
                   type="range"
                   min="0"
@@ -603,9 +634,9 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
                   step="1"
                   value={distractionMm}
                   onChange={(e) => setDistractionMm(Number(e.target.value))}
-                  className="w-28 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                  className="w-28 h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg cursor-pointer"
                 />
-                <span className="text-[11px] text-cyan-400 font-mono w-10 tabular-nums">
+                <span className="text-[11px] text-teal-700 dark:text-cyan-400 font-mono w-10 tabular-nums font-semibold">
                   {distractionMm.toFixed(0)} mm
                 </span>
               </div>

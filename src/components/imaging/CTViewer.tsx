@@ -52,18 +52,59 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const normalizedSlice = Math.max(0, Math.min(1, sliceIndex / totalSlices));
-    DicomSimulator.renderSlice(
-      canvas,
-      orientation,
-      normalizedSlice,
-      windowWidth,
-      windowCenter,
-      showCrosshair,
-      crosshairPos.x,
-      crosshairPos.y
-    );
-  }, [orientation, sliceIndex, totalSlices, windowWidth, windowCenter, showCrosshair, crosshairPos]);
+    if (metadata?.primaryPreviewUrl && orientation === 'axial') {
+      const img = new Image();
+      img.onload = () => {
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.fillStyle = '#020617';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Aspect-ratio preserved centering
+        const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+        const w = img.width * scale;
+        const h = img.height * scale;
+        const x = (canvas.width - w) / 2;
+        const y = (canvas.height - h) / 2;
+        ctx.drawImage(img, x, y, w, h);
+
+        if (showCrosshair) {
+          ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
+          ctx.lineWidth = 1;
+          const cx = crosshairPos.x * canvas.width;
+          const cy = crosshairPos.y * canvas.height;
+          ctx.beginPath();
+          ctx.moveTo(cx, 0);
+          ctx.lineTo(cx, canvas.height);
+          ctx.moveTo(0, cy);
+          ctx.lineTo(canvas.width, cy);
+          ctx.stroke();
+        }
+      };
+      img.src = metadata.primaryPreviewUrl;
+    } else {
+      const normalizedSlice = Math.max(0, Math.min(1, sliceIndex / totalSlices));
+      DicomSimulator.renderSlice(
+        canvas,
+        orientation,
+        normalizedSlice,
+        windowWidth,
+        windowCenter,
+        showCrosshair,
+        crosshairPos.x,
+        crosshairPos.y
+      );
+    }
+  }, [
+    orientation,
+    sliceIndex,
+    totalSlices,
+    windowWidth,
+    windowCenter,
+    showCrosshair,
+    crosshairPos,
+    metadata?.primaryPreviewUrl,
+  ]);
 
   // Handle Preset change
   const handlePresetSelect = (presetKey: string) => {

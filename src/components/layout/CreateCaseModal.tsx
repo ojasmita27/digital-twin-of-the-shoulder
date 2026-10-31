@@ -37,7 +37,7 @@ export const CreateCaseModal: React.FC<CreateCaseModalProps> = ({
     setIsSubmitting(true);
     setSubmitError(null);
 
-    const payload: Partial<ResearchCase> = {
+    const payload = {
       name: name.trim() || `Research Case ${subjectId}`,
       demographics: {
         researchSubjectId: subjectId,
@@ -65,19 +65,19 @@ export const CreateCaseModal: React.FC<CreateCaseModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
-      <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-lg shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+      <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-2xl overflow-hidden transition-colors">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
           <div>
-            <h3 className="text-sm font-semibold text-slate-100">Create Research Case</h3>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Create Research Case</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Initialize a de-identified orthopedic subject for CT ingestion and 3D modeling.
             </p>
           </div>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-slate-200 p-1 rounded"
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded"
           >
             <X className="w-4 h-4" />
           </button>
@@ -86,7 +86,7 @@ export const CreateCaseModal: React.FC<CreateCaseModalProps> = ({
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs">
           <div>
-            <label className="block text-slate-300 font-medium mb-1">
+            <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">
               Case Display Title
             </label>
             <input
@@ -94,13 +94,13 @@ export const CreateCaseModal: React.FC<CreateCaseModalProps> = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Post-traumatic Glenohumeral Arthritis Study"
-              className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-slate-100 placeholder:text-slate-600 focus:outline-hidden focus:border-cyan-500"
+              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded px-3 py-2 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-hidden focus:border-teal-500 dark:focus:border-cyan-500"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-slate-300 font-medium mb-1">
+              <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">
                 De-identified Subject ID
               </label>
               <input
@@ -108,18 +108,18 @@ export const CreateCaseModal: React.FC<CreateCaseModalProps> = ({
                 value={subjectId}
                 onChange={(e) => setSubjectId(e.target.value)}
                 required
-                className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-slate-100 font-mono text-[11px] focus:outline-hidden focus:border-cyan-500"
+                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded px-3 py-2 text-slate-900 dark:text-slate-100 font-mono text-[11px] focus:outline-hidden focus:border-teal-500 dark:focus:border-cyan-500"
               />
             </div>
 
             <div>
-              <label className="block text-slate-300 font-medium mb-1">
+              <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">
                 Affected Anatomy Side
               </label>
               <select
                 value={affectedSide}
                 onChange={(e) => setAffectedSide(e.target.value as any)}
-                className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-slate-100 focus:outline-hidden focus:border-cyan-500"
+                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded px-3 py-2 text-slate-900 dark:text-slate-100 focus:outline-hidden focus:border-teal-500 dark:focus:border-cyan-500"
               >
                 <option value="right">Right Shoulder</option>
                 <option value="left">Left Shoulder</option>
@@ -129,13 +129,13 @@ export const CreateCaseModal: React.FC<CreateCaseModalProps> = ({
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-slate-300 font-medium mb-1">
+              <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">
                 Age Demographic Band
               </label>
               <select
                 value={ageBand}
                 onChange={(e) => setAgeBand(e.target.value as any)}
-                className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-slate-100 focus:outline-hidden focus:border-cyan-500"
+                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded px-3 py-2 text-slate-900 dark:text-slate-100 focus:outline-hidden focus:border-teal-500 dark:focus:border-cyan-500"
               >
                 <option value="18-40">18 - 40 years</option>
                 <option value="41-60">41 - 60 years</option>
@@ -145,13 +145,13 @@ export const CreateCaseModal: React.FC<CreateCaseModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-slate-300 font-medium mb-1">
+              <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">
                 Biological Sex
               </label>
               <select
                 value={biologicalSex}
                 onChange={(e) => setBiologicalSex(e.target.value as any)}
-                className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-slate-100 focus:outline-hidden focus:border-cyan-500"
+                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded px-3 py-2 text-slate-900 dark:text-slate-100 focus:outline-hidden focus:border-teal-500 dark:focus:border-cyan-500"
               >
                 <option value="female">Female</option>
                 <option value="male">Male</option>
@@ -161,13 +161,13 @@ export const CreateCaseModal: React.FC<CreateCaseModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-slate-300 font-medium mb-1">
+            <label className="block text-slate-700 dark:text-slate-300 font-medium mb-1">
               Orthopedic Pathology / Indication
             </label>
             <select
               value={indication}
               onChange={(e) => setIndication(e.target.value as any)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-slate-100 focus:outline-hidden focus:border-cyan-500"
+              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded px-3 py-2 text-slate-900 dark:text-slate-100 focus:outline-hidden focus:border-teal-500 dark:focus:border-cyan-500"
             >
               <option value="Primary Osteoarthritis">Primary Osteoarthritis</option>
               <option value="Rotator Cuff Tear Arthropathy">Rotator Cuff Tear Arthropathy (CTA)</option>
@@ -179,36 +179,36 @@ export const CreateCaseModal: React.FC<CreateCaseModalProps> = ({
           </div>
 
           {submitError && (
-            <div className="flex items-start gap-2 p-3 bg-rose-950/40 border border-rose-900/60 rounded text-[11px] text-rose-300">
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <div className="flex items-start gap-2 p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 rounded text-[11px] text-rose-800 dark:text-rose-300">
+              <AlertCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
               <div className="space-y-0.5">
-                <div className="font-semibold text-rose-200">Backend Communication Error</div>
+                <div className="font-semibold text-rose-900 dark:text-rose-200">Backend Communication Error</div>
                 <div className="leading-relaxed">{submitError}</div>
               </div>
             </div>
           )}
 
-          <div className="flex items-start gap-2 p-3 bg-slate-950 border border-slate-800 rounded text-[11px] text-slate-400">
-            <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+          <div className="flex items-start gap-2 p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded text-[11px] text-slate-600 dark:text-slate-400">
+            <ShieldCheck className="w-4 h-4 text-teal-600 dark:text-cyan-400 shrink-0 mt-0.5" />
             <span>
               HIPAA & GDPR Compliance: Store non-identifying research identifiers only. No patient names, dates of birth, or geographic identifiers are persisted.
             </span>
           </div>
 
           {/* Footer Actions */}
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-200 dark:border-slate-800">
             <button
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors"
+              className="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-slate-950 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-50 disabled:cursor-not-allowed rounded font-semibold transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-teal-600 hover:bg-teal-500 dark:bg-cyan-400 dark:hover:bg-cyan-300 dark:text-slate-950 disabled:opacity-50 disabled:cursor-not-allowed rounded transition-colors shadow-xs"
             >
               {isSubmitting ? (
                 <>

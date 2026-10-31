@@ -97,9 +97,18 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // Initial fetch on mount
+  // Auto-fetch cases whenever backend becomes connected or on initial mount
   useEffect(() => {
-    fetchCases();
+    let previousStatus: string | null = null;
+    const unsubscribe = apiClient.subscribeHealth((state) => {
+      if (state.status === 'connected' && previousStatus !== 'connected') {
+        fetchCases();
+      } else if (state.status === 'unreachable') {
+        setBackendError(state.error || 'FastAPI backend is disconnected.');
+      }
+      previousStatus = state.status;
+    });
+    return unsubscribe;
   }, []);
 
   const handleSelectCase = async (caseId: string) => {
@@ -184,7 +193,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 font-sans">
+    <div className="flex h-screen w-screen overflow-hidden bg-slate-100/60 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans transition-colors">
       {/* Sidebar Navigation */}
       <Sidebar
         currentRoute={currentRoute}
@@ -208,7 +217,7 @@ export default function App() {
         />
 
         {/* Viewport Canvas Area */}
-        <main className="flex-1 overflow-y-auto px-6 py-5 bg-slate-950">
+        <main className="flex-1 overflow-y-auto px-6 py-5 bg-slate-100/60 dark:bg-slate-950 transition-colors">
           {currentRoute === 'overview' && (
             <OverviewView
               cases={cases}
@@ -240,6 +249,7 @@ export default function App() {
           {currentRoute === 'imaging' && (
             <ImagingView
               activeCase={activeCase}
+              onNavigateToAnatomy={() => setCurrentRoute('anatomy3d')}
               onUpdateImaging={(meta) => {
                 if (activeCase) {
                   caseStorage.updateCase(activeCase.id, {
@@ -255,15 +265,7 @@ export default function App() {
           {currentRoute === 'segmentation' && (
             <SegmentationView
               activeCase={activeCase}
-              onUpdateJob={(job) => {
-                if (activeCase) {
-                  caseStorage.updateCase(activeCase.id, {
-                    segmentationJob: job,
-                    status: job.status === 'completed' ? 'models_generated' : 'segmentation_queued',
-                  });
-                  addNotification('success', 'Segmentation Finished', `Dice score: ${job.diceScoreScapula}`, 'AI Worker');
-                }
-              }}
+              onNavigateToAnatomy={() => setCurrentRoute('anatomy3d')}
             />
           )}
 

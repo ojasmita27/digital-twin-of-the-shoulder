@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
-from .routers import health, cases
+from .routers import health, cases, imaging
 from .storage import case_store
 
 
@@ -33,6 +33,7 @@ app.add_middleware(
 # Register routers
 app.include_router(health.router)
 app.include_router(cases.router)
+app.include_router(imaging.router)
 
 
 @app.get("/")
@@ -45,4 +46,5 @@ def root():
         "docs": "/docs",
         "health": "/api/health",
         "cases": "/api/cases",
+        "imagingUpload": "/api/cases/{case_id}/imaging/upload",
     }

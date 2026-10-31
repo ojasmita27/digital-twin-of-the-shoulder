@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
   :root {
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
@@ -22,20 +24,32 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: #090d16;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: rgba(148, 163, 184, 0.4);
   border-radius: 3px;
 }
 
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(51, 65, 85, 0.6);
+}
+
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: rgba(148, 163, 184, 0.7);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.8);
 }
 
 /* Scientific input range styling */
 input[type="range"] {
+  accent-color: #0d9488;
+}
+
+.dark input[type="range"] {
   accent-color: #06b6d4;
 }
 

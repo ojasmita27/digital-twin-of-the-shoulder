@@ -7,14 +7,8 @@ import React from 'react';
 import {
   Database,
   ExternalLink,
-  Download,
-  FileCode,
-  Box,
   Layers,
-  ShieldCheck,
-  CheckCircle2,
-  HardDrive,
-  Upload,
+  Box,
 } from 'lucide-react';
 
 interface DatasetEntry {
@@ -86,45 +80,48 @@ const RESEARCH_DATASETS: DatasetEntry[] = [
 
 export const ResearchDatasetsView: React.FC = () => {
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-6 pb-12 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800/80 pb-5">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-lg font-bold tracking-tight text-slate-100">
-              Research Datasets & Open Anatomical Registries
-            </h1>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[11px] font-mono uppercase tracking-wider text-teal-700 dark:text-cyan-400 font-semibold">
+              External Open-Source Repositories
+            </span>
           </div>
-          <p className="text-xs text-slate-400">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
+            Research Datasets & Open Anatomical Registries
+          </h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-2xl leading-relaxed">
             Catalogue of verified open-access shoulder CT imaging volumes and 3D geometric shape models with provenance metadata.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-mono bg-slate-900 border border-slate-800 px-3 py-1.5 rounded">
-          <Database className="w-3.5 h-3.5 text-cyan-400" />
-          <span className="text-slate-400">Provenance Rule:</span>
-          <span className="text-emerald-400">No Mock Data Ingestion</span>
+        <div className="flex items-center gap-2 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-1.5 rounded-md shadow-xs">
+          <Database className="w-3.5 h-3.5 text-teal-600 dark:text-cyan-400" />
+          <span className="text-slate-500 dark:text-slate-400">Provenance Rule:</span>
+          <span className="text-emerald-600 dark:text-emerald-400 font-medium">No Mock Data Ingestion</span>
         </div>
       </div>
 
       {/* Dataset Type Distinction Notice */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-            <Layers className="w-4 h-4 text-cyan-400" />
+        <div className="p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg space-y-2 shadow-xs transition-colors">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-slate-200">
+            <Layers className="w-4 h-4 text-teal-600 dark:text-cyan-400" />
             <span>Type A: Raw Volumetric CT / DICOM</span>
           </div>
-          <p className="text-xs text-slate-400 leading-relaxed">
+          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
             Unprocessed cross-sectional DICOM stacks containing original Hounsfield Unit attenuation matrices, pixel spacing metadata, and slice geometry. Used for image preprocessing, window/level validation, and AI model inference.
           </p>
         </div>
 
-        <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
-            <Box className="w-4 h-4 text-cyan-400" />
+        <div className="p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg space-y-2 shadow-xs transition-colors">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-slate-200">
+            <Box className="w-4 h-4 text-teal-600 dark:text-cyan-400" />
             <span>Type B: Derived 3D Geometry & Landmarks (Zenodo)</span>
           </div>
-          <p className="text-xs text-slate-400 leading-relaxed">
+          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
             Segmented polygonal surface meshes (STL, VTK) and tabulated anatomical landmark coordinate tables (CSV). Used for statistical shape modeling (SSM), biomechanical kinematic simulation, and implant planning.
           </p>
         </div>
@@ -135,19 +132,19 @@ export const ResearchDatasetsView: React.FC = () => {
         {RESEARCH_DATASETS.map((ds) => (
           <div
             key={ds.id}
-            className="bg-slate-900 border border-slate-800 rounded-lg p-5 space-y-4 hover:border-slate-700 transition-colors"
+            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-4 hover:border-slate-300 dark:hover:border-slate-700 transition-colors shadow-xs"
           >
-            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-800 pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="font-semibold text-sm text-slate-100">{ds.name}</span>
-                  <span className="text-[10px] font-mono text-cyan-400 border border-cyan-500/30 px-1.5 rounded">
+                  <span className="font-semibold text-sm text-slate-900 dark:text-slate-100">{ds.name}</span>
+                  <span className="text-[10px] font-mono text-teal-700 dark:text-cyan-400 border border-teal-200 dark:border-cyan-500/30 px-1.5 rounded bg-teal-50 dark:bg-cyan-950/40">
                     v{ds.version}
                   </span>
                 </div>
                 {ds.doi && (
-                  <div className="text-[11px] font-mono text-slate-400 mt-0.5">
-                    DOI: <span className="text-slate-300">{ds.doi}</span>
+                  <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-0.5">
+                    DOI: <span className="text-slate-700 dark:text-slate-300">{ds.doi}</span>
                   </div>
                 )}
               </div>
@@ -156,41 +153,41 @@ export const ResearchDatasetsView: React.FC = () => {
                 href={ds.sourceUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="flex items-center gap-1.5 text-xs text-cyan-400 hover:text-cyan-300 font-mono self-start"
+                className="flex items-center gap-1.5 text-xs text-teal-600 dark:text-cyan-400 hover:text-teal-700 dark:hover:text-cyan-300 font-mono self-start"
               >
                 <span>External Repository</span>
                 <ExternalLink className="w-3 h-3" />
               </a>
             </div>
 
-            <p className="text-xs text-slate-300 leading-relaxed">{ds.description}</p>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{ds.description}</p>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono bg-slate-950 p-3 rounded border border-slate-800/80">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono bg-slate-50 dark:bg-slate-950 p-3 rounded border border-slate-200 dark:border-slate-800/80">
               <div>
                 <span className="text-slate-500 block text-[10px] uppercase">Format</span>
-                <span className="text-slate-200">{ds.formats.join(', ')}</span>
+                <span className="text-slate-800 dark:text-slate-200">{ds.formats.join(', ')}</span>
               </div>
               <div>
                 <span className="text-slate-500 block text-[10px] uppercase">License</span>
-                <span className="text-slate-200 truncate block">{ds.license}</span>
+                <span className="text-slate-800 dark:text-slate-200 truncate block">{ds.license}</span>
               </div>
               <div>
                 <span className="text-slate-500 block text-[10px] uppercase">Raw CT Available</span>
-                <span className={ds.hasRawImaging ? 'text-emerald-400' : 'text-slate-500'}>
+                <span className={ds.hasRawImaging ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-slate-400 dark:text-slate-500'}>
                   {ds.hasRawImaging ? 'Yes (DICOM)' : 'No (Geometry Only)'}
                 </span>
               </div>
               <div>
                 <span className="text-slate-500 block text-[10px] uppercase">Derived Meshes</span>
-                <span className={ds.hasDerivedGeometry ? 'text-emerald-400' : 'text-slate-500'}>
+                <span className={ds.hasDerivedGeometry ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-slate-400 dark:text-slate-500'}>
                   {ds.hasDerivedGeometry ? 'Yes (STL/VTK)' : 'No (Raw CT)'}
                 </span>
               </div>
             </div>
 
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs pt-1">
-              <div className="text-slate-400 text-[11px]">
-                <span className="text-slate-500">Validation Status:</span> {ds.validationStatus}
+              <div className="text-slate-500 dark:text-slate-400 text-[11px]">
+                <span className="text-slate-400 dark:text-slate-500">Validation Status:</span> {ds.validationStatus}
               </div>
 
               <div className="flex items-center gap-2">
