@@ -193,7 +193,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-100/60 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans transition-colors">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#f8fafc] dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans transition-colors">
       {/* Sidebar Navigation */}
       <Sidebar
         currentRoute={currentRoute}
@@ -217,7 +217,7 @@ export default function App() {
         />
 
         {/* Viewport Canvas Area */}
-        <main className="flex-1 overflow-y-auto px-6 py-5 bg-slate-100/60 dark:bg-slate-950 transition-colors">
+        <main className="flex-1 overflow-y-auto px-6 py-6 bg-[#f8fafc] dark:bg-slate-950 transition-colors">
           {currentRoute === 'overview' && (
             <OverviewView
               cases={cases}

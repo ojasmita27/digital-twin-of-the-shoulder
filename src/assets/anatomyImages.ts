@@ -3,12 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import heroImg from './images/shoulder_anatomy_hero_1793428727930.jpg';
-import sidebarWatermarkImg from './images/shoulder_bone_sketch_1793428742041.jpg';
-import emptyStateImg from './images/shoulder_empty_state_1793428756376.jpg';
+import heroImg from './images/shoulder_hero_blended.png';
+import emptyStateImg from './images/shoulder_empty_state.png';
+import watermarkImg from './images/shoulder_sidebar_watermark_clean.png';
+import logoImg from './images/shoulder_logo_clean.png';
 
 export const ANATOMY_IMAGES = {
   hero: heroImg,
-  sidebarWatermark: sidebarWatermarkImg,
   emptyState: emptyStateImg,
+  watermark: watermarkImg,
+  logo: logoImg,
 };
+
