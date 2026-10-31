@@ -113,6 +113,24 @@ export interface MorphometricMeasurements {
 }
 
 export interface ImplantPlanningConfig {
+  patientModelId?: string;
+  patientModelVersion?: number;
+  implantAssetId?: string;
+  implantAssetVersion?: number;
+  implantTransform?: {
+    translation: [number, number, number];
+    rotationDeg: [number, number, number];
+    coordinateUnit: 'unknown' | 'mm' | 'cm' | 'in';
+    unitVerified: boolean;
+  };
+  planningStatus?: 'unsaved' | 'saved' | 'stale';
+  implantMeasurement?: {
+    landmarkId: string;
+    reference: 'implant_origin';
+    distance: number;
+    displayUnit: 'unknown' | 'mm' | 'cm' | 'in';
+  };
+  updatedAt?: string;
   procedureType: 'anatomic_tsa' | 'reverse_tsa' | 'hemiarthroplasty';
   glenoidComponent: {
     system: string;
@@ -132,6 +150,20 @@ export interface ImplantPlanningConfig {
   };
   notes?: string;
   planningApprovedBy?: string;
+}
+
+export interface ImplantAsset {
+  id: string;
+  caseId: string;
+  filename: string;
+  format: 'stl' | 'obj' | 'ply';
+  storageName: string;
+  version: number;
+  fileSizeBytes: number;
+  unit: 'unknown' | 'mm' | 'cm' | 'in';
+  unitVerified: boolean;
+  uploadedAt: string;
+  isDemoAsset: boolean;
 }
 
 export interface SegmentationJob {
@@ -212,6 +244,7 @@ export interface ResearchCase {
   landmarks: AnatomicalLandmark[];
   measurements?: MorphometricMeasurements;
   implantPlan?: ImplantPlanningConfig;
+  implantAssets?: ImplantAsset[];
   reports: ClinicalReport[];
   createdByUserId?: string;
 }

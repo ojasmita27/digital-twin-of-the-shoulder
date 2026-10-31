@@ -54,6 +54,12 @@ interface ShoulderSceneProps {
   landmarkMode?: boolean;
   landmarkMoveMode?: boolean;
   onLandmarkMove?: (landmarkId: string, point: [number, number, number]) => void;
+  implantBuffer?: ArrayBuffer | null;
+  implantModelName?: string;
+  implantTransform?: { translation: [number, number, number]; rotationDeg: [number, number, number] };
+  showBone?: boolean;
+  showImplant?: boolean;
+  onImplantError?: (message: string) => void;
   onLandmarkPoint?: (point: [number, number, number]) => void;
   unitScale?: UnitScale;
   onUnitScaleChange?: (unit: UnitScale) => void;
@@ -73,6 +79,12 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   landmarkMode = false,
   landmarkMoveMode = false,
   onLandmarkMove,
+  implantBuffer = null,
+  implantModelName = 'implant.stl',
+  implantTransform,
+  showBone = true,
+  showImplant = true,
+  onImplantError,
   onLandmarkPoint,
   unitScale: unitScaleProp,
   onUnitScaleChange,
@@ -87,6 +99,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   // Model refs
   const modelRef = useRef<ProceduralShoulderModel | null>(null);
   const customMeshRef = useRef<THREE.Mesh | null>(null);
+  const implantMeshRef = useRef<THREE.Mesh | null>(null);
   const measurementGroupRef = useRef<THREE.Group | null>(null);
   const landmarksManagerRef = useRef<LandmarkMarkersManager | null>(null);
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
@@ -159,6 +172,20 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     controls.minDistance = Math.max(sphere.radius * 0.05, 0.01);
     controls.maxDistance = Math.max(sphere.radius * 20, 100);
     controls.update();
+  };
+
+  const setImplantMeshTransform = (
+    mesh: THREE.Mesh,
+    transform?: { translation: [number, number, number]; rotationDeg: [number, number, number] },
+  ) => {
+    const translation = transform?.translation || [0, 0, 0];
+    const rotation = transform?.rotationDeg || [0, 0, 0];
+    mesh.position.set(...translation);
+    mesh.rotation.set(
+      THREE.MathUtils.degToRad(rotation[0]),
+      THREE.MathUtils.degToRad(rotation[1]),
+      THREE.MathUtils.degToRad(rotation[2]),
+    );
   };
 
   // Initialize Three.js scene once
@@ -385,6 +412,44 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       onMeshError?.(message);
     }
   }, [customStlBuffer]);
+
+  useEffect(() => {
+    if (!implantBuffer || !sceneRef.current) return;
+    try {
+      const meshInfo = parseModelArrayBuffer(implantBuffer, implantModelName);
+      if (implantMeshRef.current) {
+        sceneRef.current.remove(implantMeshRef.current);
+        implantMeshRef.current.geometry.dispose();
+        (implantMeshRef.current.material as THREE.Material).dispose();
+      }
+      const implant = new THREE.Mesh(meshInfo.geometry, new THREE.MeshStandardMaterial({
+        color: '#f59e0b',
+        emissive: '#7c2d12',
+        emissiveIntensity: 0.15,
+        metalness: 0.65,
+        roughness: 0.3,
+        side: THREE.DoubleSide,
+      }));
+      implant.castShadow = true;
+      implant.receiveShadow = true;
+      sceneRef.current.add(implant);
+      implantMeshRef.current = implant;
+      setImplantMeshTransform(implant, implantTransform);
+    } catch (error) {
+      onImplantError?.(error instanceof Error ? error.message : 'The implant file could not be parsed.');
+    }
+  }, [implantBuffer, implantModelName]);
+
+  useEffect(() => {
+    if (customMeshRef.current) customMeshRef.current.visible = showBone;
+  }, [showBone]);
+
+  useEffect(() => {
+    if (implantMeshRef.current) {
+      implantMeshRef.current.visible = showImplant;
+      setImplantMeshTransform(implantMeshRef.current, implantTransform);
+    }
+  }, [implantTransform, showImplant]);
 
   // Update Theme in Three.js Scene
   useEffect(() => {

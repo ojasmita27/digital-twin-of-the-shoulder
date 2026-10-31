@@ -24,6 +24,10 @@ class ModelUploadResponse(BaseModel):
     model: Dict[str, Any]
 
 
+class ImplantUploadResponse(BaseModel):
+    implant: Dict[str, Any]
+
+
 class LandmarkPayload(BaseModel):
     name: str
     structure: str = "unknown"
@@ -65,6 +69,36 @@ def _model_for_case(case: ResearchCase, model_id: str) -> Dict[str, Any]:
     if not model:
         raise HTTPException(status_code=422, detail="The referenced patient-specific model was not found.")
     return model
+
+
+def _implant_for_case(case: ResearchCase, implant_id: str) -> Dict[str, Any]:
+    implant = next((item for item in case.implantAssets if item.get("id") == implant_id and not item.get("isDemoAsset")), None)
+    if not implant:
+        raise HTTPException(status_code=404, detail="The requested implant asset was not found.")
+    return implant
+
+
+def _finite_transform(transform: Dict[str, Any]) -> Dict[str, Any]:
+    translation = transform.get("translation")
+    rotation = transform.get("rotationDeg")
+    try:
+        translation_values = [float(value) for value in translation] if isinstance(translation, list) else []
+        rotation_values = [float(value) for value in rotation] if isinstance(rotation, list) else []
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Implant transform values must be numeric.")
+    if len(translation_values) != 3 or not all(math.isfinite(value) for value in translation_values):
+        raise HTTPException(status_code=422, detail="Implant translation must contain three finite values.")
+    if len(rotation_values) != 3 or not all(math.isfinite(value) for value in rotation_values):
+        raise HTTPException(status_code=422, detail="Implant rotation must contain three finite values.")
+    unit = transform.get("coordinateUnit", "unknown")
+    if unit not in {"unknown", "mm", "cm", "in"}:
+        raise HTTPException(status_code=422, detail="Implant coordinateUnit is invalid.")
+    return {
+        "translation": translation_values,
+        "rotationDeg": rotation_values,
+        "coordinateUnit": unit,
+        "unitVerified": bool(transform.get("unitVerified", False)),
+    }
 
 
 def _case_for_user(case_id: str, authorization: Optional[str], modify: bool = False) -> ResearchCase:
@@ -222,6 +256,120 @@ async def list_case_measurements(
     return (case.measurements or {}).get("manualMeasurements", [])
 
 
+@router.post("/cases/{case_id}/implants", response_model=ImplantUploadResponse, status_code=status.HTTP_201_CREATED)
+async def upload_case_implant(
+    case_id: str,
+    file: UploadFile = File(...),
+    metadata: Optional[str] = Form(None),
+    authorization: Optional[str] = Header(None),
+) -> ImplantUploadResponse:
+    case = _case_for_user(case_id, authorization, modify=True)
+    filename = os.path.basename(file.filename or "")
+    extension = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if extension not in SUPPORTED_FORMATS:
+        raise HTTPException(status_code=400, detail="Unsupported implant format. Select an STL, PLY, or OBJ file.")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="The implant file is empty.")
+    if len(content) > MAX_MODEL_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="The implant file exceeds the 100 MB limit.")
+    supplied_metadata: Dict[str, Any] = {}
+    if metadata:
+        try:
+            supplied_metadata = json.loads(metadata)
+        except json.JSONDecodeError as error:
+            raise HTTPException(status_code=422, detail="Implant metadata must be valid JSON.") from error
+    if supplied_metadata.get("unit", "unknown") not in {"unknown", "mm", "cm", "in"}:
+        raise HTTPException(status_code=422, detail="Implant unit is invalid.")
+    implant_id = str(uuid.uuid4())
+    stored_name = f"{implant_id}.{extension}"
+    storage_dir = os.path.join(settings.DATA_DIR, "implants", case_id)
+    os.makedirs(storage_dir, exist_ok=True)
+    with open(os.path.join(storage_dir, stored_name), "wb") as implant_file:
+        implant_file.write(content)
+    implant = {
+        "id": implant_id,
+        "caseId": case_id,
+        "filename": filename,
+        "format": extension,
+        "storageName": stored_name,
+        "version": 1,
+        "fileSizeBytes": len(content),
+        "unit": supplied_metadata.get("unit", "unknown"),
+        "unitVerified": bool(supplied_metadata.get("unitVerified", False)),
+        "uploadedAt": datetime.now(timezone.utc).isoformat(),
+        "isDemoAsset": False,
+    }
+    if not case_store.update_case(case_id, {"implantAssets": [*case.implantAssets, implant]}):
+        raise HTTPException(status_code=500, detail="The implant asset could not be saved.")
+    return ImplantUploadResponse(implant=implant)
+
+
+@router.get("/cases/{case_id}/implants/{implant_id}/file")
+async def download_case_implant(
+    case_id: str,
+    implant_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    from fastapi.responses import FileResponse
+    case = _case_for_user(case_id, authorization)
+    implant = _implant_for_case(case, implant_id)
+    path = os.path.join(settings.DATA_DIR, "implants", case_id, os.path.basename(implant["storageName"]))
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="The implant asset file is unavailable.")
+    return FileResponse(path, filename=implant["filename"])
+
+
+@router.put("/cases/{case_id}/implant-planning")
+async def save_case_implant_planning(
+    case_id: str,
+    payload: Dict[str, Any],
+    authorization: Optional[str] = Header(None),
+):
+    case = _case_for_user(case_id, authorization, modify=True)
+    model = _model_for_case(case, str(payload.get("patientModelId", "")))
+    if int(payload.get("patientModelVersion", -1)) != int(model.get("version", 1)):
+        raise HTTPException(status_code=409, detail="The planning patient model version is outdated.")
+    implant = _implant_for_case(case, str(payload.get("implantAssetId", "")))
+    if int(payload.get("implantAssetVersion", -1)) != int(implant.get("version", 1)):
+        raise HTTPException(status_code=409, detail="The planning implant asset version is outdated.")
+    transform = _finite_transform(payload.get("implantTransform") or {})
+    if transform["unitVerified"] and transform["coordinateUnit"] != model.get("unit", "unknown"):
+        raise HTTPException(status_code=422, detail="Verified implant transform units must match the patient model units.")
+    implant_measurement = payload.get("implantMeasurement")
+    if implant_measurement is not None:
+        landmark_id = str(implant_measurement.get("landmarkId", ""))
+        landmark = next((item for item in case.landmarks if item.get("id") == landmark_id), None)
+        if not landmark:
+            raise HTTPException(status_code=422, detail="The implant measurement landmark is not part of this case.")
+        if landmark.get("modelId") != model.get("id") or int(landmark.get("modelVersion", 1)) != int(model.get("version", 1)):
+            raise HTTPException(status_code=409, detail="The implant measurement landmark is stale.")
+        if implant_measurement.get("reference") != "implant_origin":
+            raise HTTPException(status_code=422, detail="Only the imported implant origin is available as a reference point.")
+        try:
+            measured_distance = float(implant_measurement.get("distance"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="The implant measurement distance must be numeric.")
+        if not math.isfinite(measured_distance) or measured_distance < 0:
+            raise HTTPException(status_code=422, detail="The implant measurement distance must be finite and non-negative.")
+        implant_measurement = {
+            "landmarkId": landmark_id,
+            "reference": "implant_origin",
+            "distance": measured_distance,
+            "displayUnit": implant_measurement.get("displayUnit", "unknown"),
+        }
+    plan = {
+        **payload,
+        "implantTransform": transform,
+        **({"implantMeasurement": implant_measurement} if implant_measurement is not None else {}),
+        "planningStatus": "saved",
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    if not case_store.update_case(case_id, {"implantPlan": plan, "status": "planning_in_progress"}):
+        raise HTTPException(status_code=500, detail="The implant planning state could not be saved.")
+    return plan
+
+
 @router.post("/cases/{case_id}/models", response_model=ModelUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_case_model(
     case_id: str,
@@ -282,7 +430,10 @@ async def upload_case_model(
     }
     meshes = [mesh for mesh in case.meshes if mesh.get("id") != model_id]
     meshes.append(model)
-    if not case_store.update_case(case_id, {"meshes": meshes}):
+    updates: Dict[str, Any] = {"meshes": meshes}
+    if case.implantPlan and case.implantPlan.get("patientModelId") != model_id:
+        updates["implantPlan"] = {**case.implantPlan, "planningStatus": "stale"}
+    if not case_store.update_case(case_id, updates):
         try:
             os.remove(stored_path)
         except OSError:

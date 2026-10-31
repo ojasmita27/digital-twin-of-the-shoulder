@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { ResearchCase, ImplantPlanningConfig } from '../../types/case';
+import React, { useEffect, useState } from 'react';
+import { ResearchCase, ImplantPlanningConfig, MeshArtifact, ImplantAsset } from '../../types/case';
 import { ShoulderScene } from '../three/ShoulderScene';
+import { apiClient } from '../../services/apiClient';
+import { caseStorage } from '../../services/caseStorage';
 import {
   Compass,
   Sliders,
@@ -28,6 +30,60 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
   onUpdatePlan,
 }) => {
   const existingPlan = activeCase?.implantPlan;
+  const patientModel = [...(activeCase?.meshes || [])].reverse().find((mesh) => !mesh.isDemoMesh) as MeshArtifact | undefined;
+  const [patientBuffer, setPatientBuffer] = useState<ArrayBuffer | null>(null);
+  const [implantBuffer, setImplantBuffer] = useState<ArrayBuffer | null>(null);
+  const [implantAsset, setImplantAsset] = useState<ImplantAsset | null>(null);
+  const [showBone, setShowBone] = useState(true);
+  const [showImplant, setShowImplant] = useState(true);
+  const [translation, setTranslation] = useState<[number, number, number]>(existingPlan?.implantTransform?.translation || [0, 0, 0]);
+  const [rotationDeg, setRotationDeg] = useState<[number, number, number]>(existingPlan?.implantTransform?.rotationDeg || [0, 0, 0]);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [selectedLandmarkId, setSelectedLandmarkId] = useState<string | null>(null);
+  const validLandmarks = (activeCase?.landmarks || []).filter((landmark) => (
+    patientModel && landmark.modelId === patientModel.id && landmark.modelVersion === (patientModel.version || 1)
+  ));
+  const selectedLandmark = validLandmarks.find((landmark) => landmark.id === selectedLandmarkId);
+  const implantDistance = selectedLandmark
+    ? Math.sqrt(selectedLandmark.coordinatesMm.reduce((sum, value, index) => {
+      const delta = value - translation[index];
+      return sum + delta * delta;
+    }, 0))
+    : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeCase || !patientModel) {
+      setPatientBuffer(null);
+      return;
+    }
+    apiClient.downloadModel(activeCase.id, patientModel.id).then((result) => {
+      if (!cancelled) {
+        if (result.data) setPatientBuffer(result.data);
+        else setError(result.error || 'The patient model could not be loaded.');
+      }
+    });
+    return () => { cancelled = true; };
+  }, [activeCase?.id, patientModel?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const savedAsset = activeCase?.implantAssets?.find((asset) => asset.id === existingPlan?.implantAssetId) || null;
+    setImplantAsset(savedAsset);
+    if (!activeCase || !savedAsset) {
+      setImplantBuffer(null);
+      return;
+    }
+    apiClient.downloadImplant(activeCase.id, savedAsset.id).then((result) => {
+      if (!cancelled) {
+        if (result.data) setImplantBuffer(result.data);
+        else setError(result.error || 'The saved implant asset could not be loaded.');
+      }
+    });
+    return () => { cancelled = true; };
+  }, [activeCase?.id, existingPlan?.implantAssetId]);
 
   const [procedureType, setProcedureType] = useState<ImplantPlanningConfig['procedureType']>(
     existingPlan?.procedureType || 'reverse_tsa'
@@ -48,12 +104,34 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
     existingPlan?.humeralComponent.humeralTrayLateralizationMm || 2
   );
   const [surgeonNotes, setSurgeonNotes] = useState<string>(
-    existingPlan?.notes || 'Baseplate positioned with 4mm lateralization to reduce inferior scapular notching in Walch B2 morphology.'
+    existingPlan?.notes || ''
   );
 
-  const handleSavePlan = () => {
-    if (!onUpdatePlan) return;
+  const handleSavePlan = async () => {
+    if (!activeCase || !patientModel || !implantAsset) {
+      setError('Load a saved patient model and implant asset before saving planning data.');
+      return;
+    }
     const updatedPlan: ImplantPlanningConfig = {
+      patientModelId: patientModel.id,
+      patientModelVersion: patientModel.version || 1,
+      implantAssetId: implantAsset.id,
+      implantAssetVersion: implantAsset.version,
+      implantTransform: {
+        translation,
+        rotationDeg,
+        coordinateUnit: patientModel.unit || 'unknown',
+        unitVerified: Boolean(patientModel.unitVerified),
+      },
+      ...(selectedLandmark && implantDistance !== null ? {
+        implantMeasurement: {
+          landmarkId: selectedLandmark.id,
+          reference: 'implant_origin' as const,
+          distance: implantDistance,
+          displayUnit: patientModel.unit || 'unknown',
+        },
+      } : {}),
+      planningStatus: 'saved',
       procedureType,
       glenoidComponent: {
         system: 'Orthopedic Research Modular System (RMS)',
@@ -62,7 +140,7 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
         lateralizationMm,
         inferiorTiltDeg,
         versionCorrectionDeg: 6,
-        implantOffsetMm: [14.2, -8.6, 22.4],
+        implantOffsetMm: [0, 0, 0],
       },
       humeralComponent: {
         system: 'Orthopedic Research Modular System (RMS)',
@@ -74,7 +152,43 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
       notes: surgeonNotes,
       planningApprovedBy: 'Research Fellow',
     };
-    onUpdatePlan(updatedPlan);
+    const result = await apiClient.saveImplantPlanning(activeCase.id, updatedPlan as unknown as Record<string, unknown>);
+    if (!result.data) {
+      setError(result.error || 'Planning state could not be saved.');
+      return;
+    }
+    onUpdatePlan?.(result.data);
+    caseStorage.updateCase(activeCase.id, { implantPlan: result.data });
+    setDirty(false);
+    setStatus('Planning state saved.');
+  };
+
+  const updateVector = (setter: React.Dispatch<React.SetStateAction<[number, number, number]>>, index: number, value: string) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return;
+    setter((current) => current.map((item, itemIndex) => itemIndex === index ? parsed : item) as [number, number, number]);
+    setDirty(true);
+  };
+
+  const resetTransform = () => {
+    setTranslation([0, 0, 0]);
+    setRotationDeg([0, 0, 0]);
+    setDirty(true);
+  };
+
+  const handleImplantImport = async (file: File) => {
+    if (!activeCase) return;
+    setError(null);
+    const result = await apiClient.uploadImplant(activeCase.id, file, { unit: patientModel?.unit || 'unknown', unitVerified: false });
+    if (!result.data) {
+      setError(result.error || 'The implant could not be uploaded.');
+      return;
+    }
+    setImplantAsset(result.data.implant);
+    setImplantBuffer(await file.arrayBuffer());
+    caseStorage.updateCase(activeCase.id, { implantAssets: [...(activeCase.implantAssets || []), result.data.implant] });
+    setStatus('Implant asset loaded. Position is unsaved.');
+    setDirty(true);
   };
 
   return (
@@ -113,6 +227,101 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
           <h3 className="text-xs font-mono uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">
             Arthroplasty Specification
           </h3>
+
+          {!patientModel && (
+            <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              A saved patient-specific model is required. The procedural demo model is not used for planning.
+            </div>
+          )}
+          {existingPlan?.patientModelId && patientModel && (
+            existingPlan.patientModelId !== patientModel.id || existingPlan.patientModelVersion !== (patientModel.version || 1)
+          ) && (
+            <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+              Saved planning data is stale because the patient model changed.
+            </div>
+          )}
+
+          <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+            <span className="text-[11px] font-mono text-teal-700 dark:text-cyan-400 font-semibold uppercase block">
+              Patient Mesh & Implant Asset
+            </span>
+            <div className="text-[11px] text-slate-500">
+              Patient model: {patientModel ? `${patientModel.filename} · v${patientModel.version || 1} · ${patientModel.unit || 'unknown'}` : 'not loaded'}
+            </div>
+            <input
+              type="file"
+              accept=".stl,.obj,.ply"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void handleImplantImport(file);
+                event.currentTarget.value = '';
+              }}
+              className="w-full text-xs"
+            />
+            <div className="text-[11px] text-slate-500">
+              Implant: {implantAsset ? `${implantAsset.filename} · ${implantAsset.unit}` : 'not loaded'}
+            </div>
+            <div className="flex gap-2 text-xs">
+              <button type="button" onClick={() => setShowBone((value) => !value)} className="rounded border px-2 py-1">
+                {showBone ? 'Hide bone' : 'Show bone'}
+              </button>
+              <button type="button" onClick={() => setShowImplant((value) => !value)} className="rounded border px-2 py-1">
+                {showImplant ? 'Hide implant' : 'Show implant'}
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+            <span className="text-[11px] font-mono text-teal-700 dark:text-cyan-400 font-semibold uppercase block">
+              Implant Transform · patient coordinates
+            </span>
+            {(['Translation', 'Rotation (deg)'] as const).map((label, vectorIndex) => {
+              const values = vectorIndex === 0 ? translation : rotationDeg;
+              const setter = vectorIndex === 0 ? setTranslation : setRotationDeg;
+              return (
+                <div key={label}>
+                  <div className="text-[11px] text-slate-500 mb-1">{label}</div>
+                  <div className="grid grid-cols-3 gap-1">
+                    {values.map((value, index) => (
+                      <input
+                        key={`${label}-${index}`}
+                        type="number"
+                        step="0.1"
+                        value={value}
+                        onChange={(event) => updateVector(setter, index, event.target.value)}
+                        className="w-full rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 text-xs"
+                        aria-label={`${label} ${['X', 'Y', 'Z'][index]}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="flex gap-2">
+              <button type="button" onClick={resetTransform} className="rounded border border-amber-300 px-2 py-1 text-xs text-amber-700">Reset transform</button>
+              {dirty && <span className="text-[11px] text-amber-700 self-center">Unsaved changes</span>}
+            </div>
+          </div>
+
+          <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+            <span className="text-[11px] font-mono text-teal-700 dark:text-cyan-400 font-semibold uppercase block">
+              Landmark reference inspection
+            </span>
+            <select
+              value={selectedLandmarkId || ''}
+              onChange={(event) => setSelectedLandmarkId(event.target.value || null)}
+              className="w-full rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 text-xs"
+            >
+              <option value="">Select a valid landmark</option>
+              {validLandmarks.map((landmark) => <option key={landmark.id} value={landmark.id}>{landmark.name}</option>)}
+            </select>
+            {implantDistance !== null && (
+              <div className="text-[11px] text-slate-600 dark:text-slate-400">
+                Implant origin to {selectedLandmark?.name}: <strong>{implantDistance.toFixed(3)} {patientModel?.unit || 'unknown'}</strong>
+                <div className="text-[10px] text-slate-500">Geometric inspection only; implant origin is the imported mesh local origin transformed into patient coordinates.</div>
+              </div>
+            )}
+          </div>
 
           {/* Procedure Type */}
           <div>
@@ -274,10 +483,22 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
         <div className="lg:col-span-2 flex flex-col gap-3">
           <div className="h-[480px]">
             <ShoulderScene
+              customStlBuffer={patientBuffer}
+              customModelName={patientModel?.filename || 'patient-model.stl'}
               landmarks={activeCase?.landmarks}
-              showImplants={true}
+              implantBuffer={implantBuffer}
+              implantModelName={implantAsset?.filename || 'implant.stl'}
+              implantTransform={{ translation, rotationDeg }}
+              showBone={showBone}
+              showImplant={showImplant}
+              onImplantError={setError}
             />
           </div>
+          {(error || status) && (
+            <div className={`rounded border p-2 text-xs ${error ? 'border-rose-300 text-rose-700' : 'border-emerald-300 text-emerald-700'}`}>
+              {error || status}
+            </div>
+          )}
 
           {/* Clinical Simulation Disclaimer */}
           <div className="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-xs text-slate-600 dark:text-slate-400 space-y-1 shadow-xs transition-colors">

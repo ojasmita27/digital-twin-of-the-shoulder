@@ -457,3 +457,66 @@ def test_landmark_and_measurement_routes_require_case_access():
         json={"name": "Blocked", "coordinatesMm": [0, 0, 0], "modelId": "model", "modelVersion": 1},
     )
     assert response.status_code == 401
+
+
+def test_implant_asset_planning_persistence_and_validation(auth_headers):
+    case, model = _case_with_model(auth_headers)
+    implant_response = client.post(
+        f"/api/cases/{case['id']}/implants",
+        files={"file": ("component.obj", b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", "text/plain")},
+        data={"metadata": json.dumps({"unit": "mm", "unitVerified": True})},
+        headers=auth_headers,
+    )
+    assert implant_response.status_code == 201
+    implant = implant_response.json()["implant"]
+    implant_file_response = client.get(
+        f"/api/cases/{case['id']}/implants/{implant['id']}/file",
+        headers=auth_headers,
+    )
+    assert implant_file_response.status_code == 200, implant_file_response.json()
+    landmark = client.post(
+        f"/api/cases/{case['id']}/landmarks",
+        json={
+            "name": "Planning reference",
+            "coordinatesMm": [1, 2, 3],
+            "modelId": model["id"],
+            "modelVersion": model["version"],
+        },
+        headers=auth_headers,
+    ).json()
+
+    plan = {
+        "patientModelId": model["id"],
+        "patientModelVersion": model["version"],
+        "implantAssetId": implant["id"],
+        "implantAssetVersion": implant["version"],
+        "implantTransform": {
+            "translation": [1, 2, 3],
+            "rotationDeg": [10, 20, 30],
+            "coordinateUnit": "unknown",
+            "unitVerified": False,
+        },
+        "implantMeasurement": {
+            "landmarkId": landmark["id"],
+            "reference": "implant_origin",
+            "distance": 3.741657,
+            "displayUnit": "mm",
+        },
+    }
+    saved = client.put(f"/api/cases/{case['id']}/implant-planning", json=plan, headers=auth_headers)
+    assert saved.status_code == 200
+    assert saved.json()["planningStatus"] == "saved"
+    assert saved.json()["implantTransform"]["translation"] == [1, 2, 3]
+    assert saved.json()["implantMeasurement"]["landmarkId"] == landmark["id"]
+
+    invalid = {**plan, "implantTransform": {**plan["implantTransform"], "translation": [1, "bad", 3]}}
+    invalid_response = client.put(f"/api/cases/{case['id']}/implant-planning", json=invalid, headers=auth_headers)
+    assert invalid_response.status_code == 422
+
+    stale = {**plan, "patientModelVersion": model["version"] + 1}
+    stale_response = client.put(f"/api/cases/{case['id']}/implant-planning", json=stale, headers=auth_headers)
+    assert stale_response.status_code == 409
+
+    persisted = client.get(f"/api/cases/{case['id']}", headers=auth_headers).json()
+    assert persisted["implantAssets"][0]["id"] == implant["id"]
+    assert persisted["implantPlan"]["implantAssetId"] == implant["id"]

@@ -9,7 +9,7 @@ import {
   BackendConfig,
   DicomUploadResponse,
 } from '../types/api';
-import { AnatomicalLandmark, MeshArtifact, ResearchCase, SavedMeasurement } from '../types/case';
+import { AnatomicalLandmark, ImplantAsset, MeshArtifact, ResearchCase, SavedMeasurement } from '../types/case';
 
 export const PRODUCTION_RENDER_BACKEND = 'https://digital-twin-of-the-shoulder.onrender.com';
 
@@ -215,6 +215,20 @@ export class ApiClient {
     }
   }
 
+  private async downloadBinary(endpoint: string): Promise<ApiCallResult<ArrayBuffer>> {
+    const rawBase = (this.config.baseUrl || '').trim().replace(/\/+$/, '');
+    try {
+      const response = await fetch(`${rawBase}${endpoint}`, {
+        headers: this.config.apiKey ? { Authorization: 'Bearer ' + this.config.apiKey } : {},
+      });
+      if (response.status === 401) this.unauthorizedHandler?.();
+      if (!response.ok) return { data: null, error: `HTTP ${response.status}: ${response.statusText}`, status: response.status, durationMs: 0 };
+      return { data: await response.arrayBuffer(), error: null, status: response.status, durationMs: 0 };
+    } catch (error) {
+      return { data: null, error: error instanceof Error ? error.message : 'Binary download failed.', status: null, durationMs: 0 };
+    }
+  }
+
   /**
    * Genuine Health Check against FastAPI backend.
    * Broadcasts the status to all subscribed components (TopBar, SettingsView, etc.).
@@ -308,6 +322,36 @@ export class ApiClient {
     } catch (error) {
       return { data: null, error: error instanceof Error ? error.message : 'Model download failed.', status: null, durationMs: 0 };
     }
+  }
+
+  public async uploadImplant(caseId: string, file: File, metadata: Record<string, unknown> = {}): Promise<ApiCallResult<{ implant: ImplantAsset }>> {
+      const rawBase = (this.config.baseUrl || '').trim().replace(/\/+$/, '');
+      const formData = new FormData();
+      formData.append('file', file, file.name);
+      formData.append('metadata', JSON.stringify(metadata));
+      try {
+        const response = await fetch(`${rawBase}/api/cases/${encodeURIComponent(caseId)}/implants`, {
+          method: 'POST',
+          body: formData,
+          headers: this.config.apiKey ? { Authorization: 'Bearer ' + this.config.apiKey } : {},
+        });
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok) return { data: null, error: `HTTP ${response.status}: ${json.detail || response.statusText}`, status: response.status, durationMs: 0 };
+        return { data: json as { implant: ImplantAsset }, error: null, status: response.status, durationMs: 0 };
+      } catch (error) {
+        return { data: null, error: error instanceof Error ? error.message : 'Implant upload failed.', status: null, durationMs: 0 };
+      }
+    }
+
+  public async downloadImplant(caseId: string, implantId: string): Promise<ApiCallResult<ArrayBuffer>> {
+    return this.downloadBinary(`/api/cases/${encodeURIComponent(caseId)}/implants/${encodeURIComponent(implantId)}/file`);
+  }
+
+  public async saveImplantPlanning(caseId: string, plan: Record<string, unknown>): Promise<ApiCallResult<ResearchCase['implantPlan']>> {
+    return this.request<ResearchCase['implantPlan']>(`/api/cases/${encodeURIComponent(caseId)}/implant-planning`, {
+      method: 'PUT',
+      body: JSON.stringify(plan),
+    });
   }
 
   public async deleteModel(caseId: string, modelId: string): Promise<ApiCallResult<{ success: boolean }>> {
