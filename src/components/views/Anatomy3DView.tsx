@@ -3,10 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { ResearchCase, AnatomicalLandmark } from '../../types/case';
+import React, { useEffect, useRef, useState } from 'react';
+import { ResearchCase, AnatomicalLandmark, SavedMeasurement, MeshArtifact } from '../../types/case';
 import { ShoulderScene } from '../three/ShoulderScene';
 import { LoadedMeshResult } from '../three/STLLoaderUtil';
+import { apiClient } from '../../services/apiClient';
+import { caseStorage } from '../../services/caseStorage';
 import {
   Box,
   MapPin,
@@ -29,11 +31,57 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
 }) => {
   const [selectedLandmark, setSelectedLandmark] = useState<AnatomicalLandmark | null>(null);
   const [customMeshInfo, setCustomMeshInfo] = useState<LoadedMeshResult | null>(null);
+  const [customMeshFile, setCustomMeshFile] = useState<{ name: string; size: number } | null>(null);
+  const [meshError, setMeshError] = useState<string | null>(null);
+  const [customMeshBuffer, setCustomMeshBuffer] = useState<ArrayBuffer | null>(null);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
+  const [landmarkMode, setLandmarkMode] = useState(false);
+  const [landmarkName, setLandmarkName] = useState('');
+  const restoringModel = useRef(false);
   const [activeTab, setActiveTab] = useState<'hierarchy' | 'landmarks' | 'geometry'>('hierarchy');
   const [geometryExpanded, setGeometryExpanded] = useState(false);
 
   const landmarks = activeCase?.landmarks || [];
   const isProceduralTemplate = !customMeshInfo && (!activeCase?.meshes || activeCase.meshes.length === 0);
+  const savedModel = (activeCase?.meshes || []).find((mesh) => !mesh.isDemoMesh) as MeshArtifact | undefined;
+
+  useEffect(() => {
+    if (savedModel && saveStatus === 'idle') setSaveStatus('saved');
+  }, [savedModel, saveStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeCase || !savedModel?.id) {
+      setCustomMeshBuffer(null);
+      return;
+    }
+    restoringModel.current = true;
+    apiClient.downloadModel(activeCase.id, savedModel.id).then((result) => {
+      if (cancelled) return;
+      if (result.data) {
+        setCustomMeshBuffer(result.data);
+      } else {
+        restoringModel.current = false;
+        setMeshError(result.error || 'Saved model file could not be restored.');
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCase?.id, savedModel?.id]);
+
+  const persistCase = async (updates: Partial<ResearchCase>) => {
+    if (!activeCase || activeCase.isDemo) return;
+    setSaveStatus('saving');
+    const result = await apiClient.updateCase(activeCase.id, updates);
+    if (result.data) {
+      caseStorage.updateCase(activeCase.id, updates);
+      setSaveStatus('saved');
+    } else {
+      setSaveStatus('failed');
+      setMeshError(result.error || 'Changes could not be saved.');
+    }
+  };
 
   return (
     <div className="flex flex-col h-[calc(100vh-5.5rem)] min-h-[640px] pb-3 max-w-7xl mx-auto">
@@ -55,6 +103,12 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Polygonal surface rendering with standard ISB anatomical coordinate frame and interactive landmark inspection.
           </p>
+          {savedModel && (
+            <div className="mt-1 text-[11px] font-mono text-slate-500 dark:text-slate-400">
+              Model v{savedModel.version || 1} · {savedModel.filename} · Units: {savedModel.unit || 'unknown'}
+              {savedModel.unitVerified ? ' (verified)' : ' (unverified)'}
+            </div>
+          )}
         </div>
 
         {/* Provenance Badge */}
@@ -71,7 +125,7 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
         ) : (
           <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 rounded-md text-xs font-mono text-emerald-800 dark:text-emerald-300 shadow-xs">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            <span>PATIENT-SPECIFIC MESH LOADED</span>
+            <span>PATIENT-SPECIFIC MESH LOADED · {saveStatus === 'saving' ? 'SAVING' : saveStatus === 'failed' ? 'SAVE FAILED' : saveStatus === 'saved' ? 'SAVED' : 'UNSAVED'}</span>
           </div>
         )}
       </div>
@@ -168,9 +222,27 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
 
             {activeTab === 'landmarks' && (
               <div className="space-y-2">
-                <div className="text-[11px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 font-semibold">
-                  Anatomical Fiducial Landmarks
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 font-semibold">
+                    Manual Landmarks
+                  </div>
+                  {savedModel && (
+                    <button
+                      onClick={() => setLandmarkMode((active) => !active)}
+                      className="text-[10px] px-2 py-1 rounded border border-teal-300 text-teal-700 dark:text-cyan-300"
+                    >
+                      {landmarkMode ? 'Click mesh…' : 'Place point'}
+                    </button>
+                  )}
                 </div>
+                {savedModel && landmarkMode && (
+                  <input
+                    value={landmarkName}
+                    onChange={(event) => setLandmarkName(event.target.value)}
+                    placeholder="Landmark name"
+                    className="w-full px-2 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                )}
 
                 {landmarks.length === 0 ? (
                   <div className="p-4 text-center text-slate-400 text-xs">
@@ -218,7 +290,12 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
 
                 {customMeshInfo ? (
                   <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md space-y-2">
-                    <div className="text-teal-700 dark:text-cyan-400 font-semibold font-sans">Uploaded Patient Surface</div>
+                    <div className="text-teal-700 dark:text-cyan-400 font-semibold font-sans">Imported STL Surface</div>
+                    {customMeshFile && (
+                      <div className="text-slate-600 dark:text-slate-400 font-sans">
+                        {customMeshFile.name} · {(customMeshFile.size / (1024 * 1024)).toFixed(2)} MB
+                      </div>
+                    )}
                     <div>Vertices: {customMeshInfo.vertexCount.toLocaleString()}</div>
                     <div>Faces (Triangles): {customMeshInfo.faceCount.toLocaleString()}</div>
                     <div>
@@ -226,9 +303,44 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                       <div className="text-slate-800 dark:text-slate-200 mt-0.5">
                         {customMeshInfo.boundingBox.dimensions[0].toFixed(1)} ×{' '}
                         {customMeshInfo.boundingBox.dimensions[1].toFixed(1)} ×{' '}
-                        {customMeshInfo.boundingBox.dimensions[2].toFixed(1)} mm
+                        {customMeshInfo.boundingBox.dimensions[2].toFixed(1)} (units unverified)
                       </div>
                     </div>
+                    <div>Surface area: {customMeshInfo.surfaceArea.toFixed(2)} (units², unverified)</div>
+                    <div>Watertightness: {customMeshInfo.isWatertight === null ? 'Not evaluated' : customMeshInfo.isWatertight ? 'Yes' : 'No'}</div>
+                    <div>Connected components: {customMeshInfo.connectedComponentCount}</div>
+                    <div>Boundary edges: {customMeshInfo.boundaryEdgeCount}</div>
+                    <div>Non-manifold edges: {customMeshInfo.nonManifoldEdgeCount}</div>
+                    <div>Degenerate triangles: {customMeshInfo.degenerateTriangleCount}</div>
+                    <div>Duplicate triangles: {customMeshInfo.duplicateTriangleCount}</div>
+                    <div>Normals: {customMeshInfo.normalsConsistent === null ? 'Not assessed' : customMeshInfo.normalsConsistent ? 'Consistent' : 'Inconsistent'}</div>
+                    <div className={customMeshInfo.validationStatus === 'valid' ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-300'}>
+                      Validation: {customMeshInfo.validationStatus === 'valid' ? 'Pass (technical mesh checks)' : 'Fail (degenerate triangles detected)'}
+                    </div>
+                    <div className="border-t border-slate-200 dark:border-slate-800 pt-2 mt-2 space-y-1.5 font-sans">
+                      <div className="font-semibold text-slate-700 dark:text-slate-300">Quality assessment</div>
+                      {customMeshInfo.qualityChecks.map((check) => (
+                        <div key={check.name} className="flex items-start justify-between gap-2">
+                          <span>{check.name}</span>
+                          <span className={
+                            check.status === 'pass'
+                              ? 'text-emerald-700 dark:text-emerald-400'
+                              : check.status === 'fail'
+                                ? 'text-rose-700 dark:text-rose-300'
+                                : check.status === 'warning'
+                                  ? 'text-amber-700 dark:text-amber-300'
+                                  : 'text-slate-500'
+                          }>
+                            {check.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    {customMeshInfo.connectedComponentCount > 1 && (
+                      <div className="text-amber-700 dark:text-amber-300 font-sans">
+                        Warning: this STL contains disconnected surface components. Anatomy is not independently identified.
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md space-y-2 text-slate-600 dark:text-slate-400">
@@ -237,6 +349,11 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                     <div>Humerus Vertex Count: 29,810</div>
                     <div>Glenoid Ellipse Aspect: 1.38</div>
                     <div>Bounding Span: 184 × 165 × 95 mm</div>
+                  </div>
+                )}
+                {meshError && (
+                  <div className="p-3 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 rounded-md text-rose-700 dark:text-rose-300 font-sans">
+                    {meshError}
                   </div>
                 )}
 
@@ -267,11 +384,121 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
         <div className="lg:col-span-3 h-full">
           <ShoulderScene
             landmarks={landmarks}
+            customStlBuffer={customMeshBuffer}
+            customModelName={savedModel?.filename || 'restored-model.stl'}
+            unitScale={savedModel?.unit || 'unknown'}
             activeLandmarkId={selectedLandmark?.id}
             onSelectLandmark={setSelectedLandmark}
-            onMeshLoaded={(info) => {
+            landmarkMode={landmarkMode}
+            onLandmarkPoint={(point) => {
+              if (!activeCase || !savedModel || !landmarkName.trim()) {
+                setMeshError('Enter a landmark name before selecting a surface point.');
+                return;
+              }
+              const landmark: AnatomicalLandmark = {
+                id: crypto.randomUUID(),
+                name: landmarkName.trim(),
+                structure: 'scapula',
+                coordinatesMm: point,
+                provenance: 'manual_annotated',
+                modelId: savedModel.id,
+                modelVersion: savedModel.version || 1,
+                coordinateUnit: savedModel.unit || 'unknown',
+                unitVerified: Boolean(savedModel.unitVerified),
+                verificationStatus: 'unverified',
+                validationNotes: 'Manually placed point; anatomical identity is unverified.',
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              };
+              setLandmarkMode(false);
+              setLandmarkName('');
+              persistCase({ landmarks: [...(activeCase.landmarks || []), landmark] });
+            }}
+            onUnitScaleChange={(unit) => {
+              if (!savedModel) return;
+              persistCase({
+                meshes: activeCase?.meshes.map((mesh) => mesh.id === savedModel.id
+                  ? { ...mesh, unit, unitVerified: unit !== 'unknown' }
+                  : mesh) || [],
+              });
+            }}
+            onMeasurement={(points) => {
+              if (!savedModel || !activeCase) return;
+              const measurement: SavedMeasurement = {
+                id: crypto.randomUUID(),
+                caseId: activeCase.id,
+                modelId: savedModel.id,
+                modelVersion: savedModel.version || 1,
+                pointA: points.pointA,
+                pointB: points.pointB,
+                rawDistance: points.distance,
+                displayUnit: savedModel.unit || 'unknown',
+                scaleVerified: Boolean(savedModel.unitVerified),
+                type: 'point_to_point',
+                provenance: 'manual',
+                createdAt: new Date().toISOString(),
+              };
+              const existing = activeCase.measurements?.manualMeasurements || [];
+              persistCase({ measurements: { ...(activeCase.measurements || {}), manualMeasurements: [...existing, measurement] } as ResearchCase['measurements'] });
+            }}
+            onMeshLoaded={async (info, file) => {
               setCustomMeshInfo(info);
+              setCustomMeshFile(file);
+              setMeshError(null);
               setActiveTab('geometry');
+              if (restoringModel.current) {
+                restoringModel.current = false;
+                return;
+              }
+              if (!activeCase || activeCase.isDemo) {
+                setMeshError('Select a saved patient case before importing a model.');
+                return;
+              }
+              const upload = await apiClient.uploadModel(activeCase.id, file.file, {
+                vertexCount: info.vertexCount,
+                triangleCount: info.faceCount,
+                boundingBox: { x: info.boundingBox.dimensions[0], y: info.boundingBox.dimensions[1], z: info.boundingBox.dimensions[2] },
+                surfaceArea: info.surfaceArea,
+                qualityChecks: info.qualityChecks,
+                validationStatus: info.validationStatus,
+              });
+              if (upload.data) {
+                caseStorage.updateCase(activeCase.id, {
+                  meshes: [...(activeCase.meshes || []), upload.data.model],
+                });
+                setSaveStatus('saved');
+              } else {
+                setSaveStatus('failed');
+                setMeshError(upload.error || 'The model could not be saved.');
+              }
+            }}
+            onMeshError={setMeshError}
+            onMeshRemoved={() => {
+              setCustomMeshInfo(null);
+              setCustomMeshFile(null);
+              setCustomMeshBuffer(null);
+              if (activeCase && savedModel) {
+                apiClient.deleteModel(activeCase.id, savedModel.id).then((result) => {
+                  if (result.status === 204) {
+                    caseStorage.updateCase(activeCase.id, {
+                      meshes: activeCase.meshes.filter((mesh) => mesh.id !== savedModel.id),
+                      landmarks: activeCase.landmarks.filter((landmark) => landmark.modelId !== savedModel.id),
+                      measurements: activeCase.measurements
+                        ? {
+                            ...activeCase.measurements,
+                            manualMeasurements: activeCase.measurements.manualMeasurements?.filter(
+                              (measurement) => measurement.modelId !== savedModel.id,
+                            ),
+                          }
+                        : activeCase.measurements,
+                    });
+                    setSaveStatus('saved');
+                  } else {
+                    setSaveStatus('failed');
+                    setMeshError(result.error || 'The model could not be removed from the case.');
+                  }
+                });
+              }
             }}
           />
         </div>

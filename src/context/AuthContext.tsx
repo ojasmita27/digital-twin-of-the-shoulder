@@ -4,7 +4,7 @@
  */
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { UserProfile, UserRole, LoginResponse } from '../types/auth';
+import { UserProfile, LoginResponse } from '../types/auth';
 import { apiClient } from '../services/apiClient';
 
 interface AuthContextType {
@@ -22,20 +22,6 @@ interface AuthContextType {
 
 const AUTH_STORAGE_KEY = 'shouldertwin_auth_session';
 
-// Standard baseline profile if offline or initializing
-const DEFAULT_DOCTOR_PROFILE: UserProfile = {
-  id: 'usr-default-doc',
-  email: 'doctor@shouldertwin.org',
-  fullName: 'Dr. Sharma',
-  role: 'doctor',
-  title: 'MD, FRCS (Tr & Orth)',
-  specialty: 'Shoulder & Elbow Reconstruction',
-  organization: 'Department of Orthopedic Surgery',
-  isActive: true,
-  createdAt: '2026-01-01T00:00:00Z',
-  lastLoginAt: new Date().toISOString(),
-};
-
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -44,12 +30,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const stored = localStorage.getItem(AUTH_STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
-        return parsed.user || DEFAULT_DOCTOR_PROFILE;
+        return parsed.token && parsed.user ? parsed.user : null;
       }
     } catch {
-      // fallback
+      localStorage.removeItem(AUTH_STORAGE_KEY);
     }
-    return DEFAULT_DOCTOR_PROFILE;
+    return null;
   });
 
   const [token, setToken] = useState<string | null>(() => {
@@ -57,15 +43,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const stored = localStorage.getItem(AUTH_STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
-        return parsed.token || 'demo-bearer-token';
+        return typeof parsed.token === 'string' && parsed.token ? parsed.token : null;
       }
     } catch {
-      // fallback
+      localStorage.removeItem(AUTH_STORAGE_KEY);
     }
-    return 'demo-bearer-token';
+    return null;
   });
 
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    apiClient.setUnauthorizedHandler(() => {
+      setUser(null);
+      setToken(null);
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      apiClient.updateConfig({ apiKey: '' });
+    });
+
+    return () => apiClient.setUnauthorizedHandler(null);
+  }, []);
 
   // Sync token to apiClient headers
   useEffect(() => {
@@ -103,32 +100,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoading(false);
       return { success: true };
     } catch (err) {
-      // If network fails (e.g. backend offline), simulate local offline validation for the known test accounts
       setIsLoading(false);
-      const isKnownDoc = email.toLowerCase() === 'doctor@shouldertwin.org' && password === 'DoctorPass123!';
-      const isKnownRes = email.toLowerCase() === 'researcher@shouldertwin.org' && password === 'ResearcherPass123!';
-      const isKnownAdmin = email.toLowerCase() === 'admin@shouldertwin.org' && password === 'AdminPass123!';
-
-      if (isKnownDoc || isKnownRes || isKnownAdmin) {
-        const role: UserRole = isKnownDoc ? 'doctor' : isKnownRes ? 'researcher' : 'admin';
-        const offlineUser: UserProfile = {
-          id: `usr-${role}-local`,
-          email,
-          fullName: isKnownDoc ? 'Dr. Sharma' : isKnownRes ? 'Dr. Sarah Chen' : 'Systems Administrator',
-          role,
-          title: isKnownDoc ? 'MD, FRCS' : isKnownRes ? 'PhD' : 'Admin',
-          specialty: isKnownDoc ? 'Orthopedic Surgery' : isKnownRes ? 'Biomechanics' : 'Security',
-          organization: 'ShoulderTwin Medical Center',
-          isActive: true,
-          createdAt: new Date().toISOString(),
-          lastLoginAt: new Date().toISOString(),
-        };
-        setUser(offlineUser);
-        setToken(`offline-token-${role}`);
-        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token: `offline-token-${role}`, user: offlineUser }));
-        return { success: true };
-      }
-
       return {
         success: false,
         error: err instanceof Error ? err.message : 'Login network failure. Check backend connection.',
@@ -139,7 +111,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = async (): Promise<void> => {
     try {
       const baseUrl = apiClient.getConfig().baseUrl.trim().replace(/\/+$/, '');
-      if (token && !token.startsWith('offline-')) {
+      if (token) {
         await fetch(`${baseUrl}/api/auth/logout`, {
           method: 'POST',
           headers: {
@@ -220,13 +192,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Verify active session on mount
   useEffect(() => {
-    if (token && !token.startsWith('offline-') && !token.startsWith('demo-')) {
+    if (token) {
       refreshProfile();
     }
   }, []);
 
   const refreshProfile = async () => {
-    if (!token || token.startsWith('offline-') || token.startsWith('demo-')) return;
+    if (!token) return;
     try {
       const baseUrl = apiClient.getConfig().baseUrl.trim().replace(/\/+$/, '');
       const res = await fetch(`${baseUrl}/api/auth/me`, {
@@ -254,7 +226,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         user,
         token,
-        isAuthenticated: !!user,
+        isAuthenticated: !!user && !!token,
         isLoading,
         login,
         logout,

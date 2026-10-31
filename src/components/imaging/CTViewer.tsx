@@ -27,8 +27,9 @@ interface CTViewerProps {
 
 export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) => {
   const [orientation, setOrientation] = useState<SliceOrientation>('axial');
-  const [sliceIndex, setSliceIndex] = useState(84);
+  const [sliceIndex, setSliceIndex] = useState(1);
   const totalSlices = metadata?.sliceCount || 168;
+  const isRealSeries = Boolean(metadata?.sourceFiles?.length);
 
   const [windowWidth, setWindowWidth] = useState(metadata?.windowWidth || 1500);
   const [windowCenter, setWindowCenter] = useState(metadata?.windowCenter || 450);
@@ -52,7 +53,8 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    if (metadata?.primaryPreviewUrl && orientation === 'axial') {
+    const axialPreview = metadata?.slicePreviewUrls?.[sliceIndex - 1] || metadata?.primaryPreviewUrl;
+    if (axialPreview && orientation === 'axial') {
       const img = new Image();
       img.onload = () => {
         const ctx = canvas.getContext('2d');
@@ -81,7 +83,17 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
           ctx.stroke();
         }
       };
-      img.src = metadata.primaryPreviewUrl;
+      img.src = axialPreview;
+    } else if (isRealSeries) {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.fillStyle = '#020617';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '14px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${orientation.toUpperCase()} reconstruction preview is not available`, canvas.width / 2, canvas.height / 2 - 8);
+      ctx.fillText('Use axial slices or run reconstruction after segmentation.', canvas.width / 2, canvas.height / 2 + 18);
     } else {
       const normalizedSlice = Math.max(0, Math.min(1, sliceIndex / totalSlices));
       DicomSimulator.renderSlice(
@@ -104,6 +116,8 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, onSliceChange }) =
     showCrosshair,
     crosshairPos,
     metadata?.primaryPreviewUrl,
+    metadata?.slicePreviewUrls,
+    isRealSeries,
   ]);
 
   // Handle Preset change

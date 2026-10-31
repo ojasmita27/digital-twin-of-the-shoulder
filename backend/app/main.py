@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
-from .routers import health, cases, imaging, auth
+from .routers import health, cases, imaging, auth, models
 from .storage import case_store
 
 
@@ -35,6 +35,7 @@ app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(cases.router)
 app.include_router(imaging.router)
+app.include_router(models.router)
 
 
 @app.get("/")

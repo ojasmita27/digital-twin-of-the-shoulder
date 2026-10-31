@@ -5,6 +5,10 @@ Handles real DICOM (.dcm) file uploads, validation, metadata extraction,
 and 3D reconstruction feasibility assessment.
 """
 
+import hashlib
+import os
+import uuid
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Tuple
 from fastapi import APIRouter, UploadFile, File, HTTPException, status, Header, Request
 from pydantic import BaseModel
@@ -18,7 +22,10 @@ from ..services.dicom_service import (
     render_slice_preview_base64,
     analyze_dicom_series,
     DicomValidationError,
+    load_volume_from_files,
+    extract_patient_space_mesh,
 )
+from ..config import settings
 
 router = APIRouter(prefix="/api", tags=["imaging"])
 
@@ -67,9 +74,14 @@ class DicomUploadResponse(BaseModel):
     reconstructionMessage: str
     slices: List[SliceInfo]
     primaryPreviewUrl: Optional[str] = None
+    sourceFiles: List[str] = []
+    processingStatus: str = "validated"
 
 
-async def process_uploaded_dicom_files(files: List[UploadFile]) -> DicomUploadResponse:
+async def process_uploaded_dicom_files(
+    files: List[UploadFile],
+    storage_dir: Optional[str] = None,
+) -> DicomUploadResponse:
     if not files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -78,12 +90,14 @@ async def process_uploaded_dicom_files(files: List[UploadFile]) -> DicomUploadRe
 
     parsed_slices: List[Tuple[Dict[str, Any], Optional[str]]] = []
     total_size = 0
+    source_contents: List[Tuple[str, bytes]] = []
 
     for file in files:
         filename = file.filename or "unknown.dcm"
 
         # Read content
         content = await file.read()
+        source_contents.append((filename, content))
         file_size = len(content)
         total_size += file_size
 
@@ -143,6 +157,15 @@ async def process_uploaded_dicom_files(files: List[UploadFile]) -> DicomUploadRe
         for meta, preview in deduped_slices
     ]
 
+    stored_files: List[str] = []
+    if storage_dir:
+        os.makedirs(storage_dir, exist_ok=True)
+        for filename, content in source_contents:
+            stored_name = f"{uuid.uuid4().hex}.dcm"
+            with open(os.path.join(storage_dir, stored_name), "wb") as stored:
+                stored.write(content)
+            stored_files.append(stored_name)
+
     return DicomUploadResponse(
         success=True,
         fileCount=len(files),
@@ -170,6 +193,7 @@ async def process_uploaded_dicom_files(files: List[UploadFile]) -> DicomUploadRe
         reconstructionMessage=analysis["reconstructionMessage"],
         slices=slices_summary,
         primaryPreviewUrl=primary_preview,
+        sourceFiles=stored_files,
     )
 
 
@@ -201,7 +225,8 @@ async def upload_case_dicom(
             detail=f"Access denied. You do not have permission to upload imaging to case '{case_id}'.",
         )
 
-    response = await process_uploaded_dicom_files(files)
+    series_dir = os.path.join(settings.DATA_DIR, "imaging", case_id)
+    response = await process_uploaded_dicom_files(files, storage_dir=series_dir)
     response.caseId = case_id
 
     # Persist metadata to SQLite case record
@@ -230,6 +255,10 @@ async def upload_case_dicom(
         "primaryPreviewUrl": response.primaryPreviewUrl,
         "fileCount": response.fileCount,
         "uploadedFiles": [s.filename for s in response.slices[:50]],
+        "sourceFiles": response.sourceFiles,
+        "sourceStorage": os.path.relpath(series_dir, settings.DATA_DIR),
+        "uploadedAt": datetime.now(timezone.utc).isoformat(),
+        "processingStatus": response.processingStatus,
     }
 
     case_store.update_case(
@@ -255,6 +284,123 @@ async def upload_case_dicom(
     )
 
     return response
+
+
+@router.post("/cases/{case_id}/imaging/segmentation")
+@router.post("/cases/{case_id}/segmentation/segment")
+async def segment_case_ct(
+    case_id: str,
+    thresholdHu: float = 300.0,
+    authorization: Optional[str] = Header(None),
+):
+    """Create a real, threshold-based mask from the persisted CT volume."""
+    user = require_role([UserRole.DOCTOR, UserRole.ADMIN])(authorization)
+    case = case_store.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
+    if not case_store.user_can_modify_case(user, case):
+        raise HTTPException(status_code=403, detail=f"Access denied for research case '{case_id}'.")
+    imaging = case.imaging or {}
+    source_files = [str(name) for name in imaging.get("sourceFiles", [])]
+    series_dir = os.path.join(settings.DATA_DIR, "imaging", case_id)
+    paths = [os.path.join(series_dir, os.path.basename(name)) for name in source_files]
+    if len(paths) < 2:
+        raise HTTPException(status_code=400, detail="At least two persisted DICOM slices are required for segmentation.")
+    try:
+        volume, analysis = load_volume_from_files(paths)
+        mask = volume >= thresholdHu
+        if not bool(mask.any()):
+            raise DicomValidationError(f"Segmentation is empty at threshold {thresholdHu:.1f} HU.")
+        segmentation_id = str(uuid.uuid4())
+        mask_path = os.path.join(series_dir, f"{segmentation_id}.npz")
+        import numpy as np
+        np.savez_compressed(mask_path, mask=mask.astype(np.uint8), thresholdHu=thresholdHu)
+    except (DicomValidationError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Segmentation failed: {exc}") from exc
+    job = {
+        "jobId": segmentation_id,
+        "status": "completed",
+        "method": "threshold",
+        "thresholdHu": thresholdHu,
+        "maskStorageName": os.path.basename(mask_path),
+        "voxelCount": int(mask.sum()),
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "limitations": "Prototype threshold segmentation; requires user inspection and correction before clinical use.",
+    }
+    case_store.update_case(case_id, {"segmentationJob": job, "status": "segmentation_completed"})
+    return job
+
+
+@router.post("/cases/{case_id}/imaging/reconstruct")
+@router.post("/cases/{case_id}/reconstruction")
+async def reconstruct_case_ct(
+    case_id: str,
+    thresholdHu: float = 300.0,
+    authorization: Optional[str] = Header(None),
+):
+    """Extract and persist a patient-specific STL from the persisted CT volume."""
+    user = require_role([UserRole.DOCTOR, UserRole.ADMIN])(authorization)
+    case = case_store.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
+    if not case_store.user_can_modify_case(user, case):
+        raise HTTPException(status_code=403, detail=f"Access denied for research case '{case_id}'.")
+    imaging = case.imaging or {}
+    source_files = [str(name) for name in imaging.get("sourceFiles", [])]
+    if len(source_files) < 2:
+        raise HTTPException(status_code=400, detail="A single DICOM slice cannot be reconstructed as a 3D volume.")
+    series_dir = os.path.join(settings.DATA_DIR, "imaging", case_id)
+    paths = [os.path.join(series_dir, os.path.basename(name)) for name in source_files]
+    try:
+        volume, analysis = load_volume_from_files(paths)
+        mesh_bytes, stats = extract_patient_space_mesh(volume, analysis, thresholdHu)
+    except (DicomValidationError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Reconstruction failed: {exc}") from exc
+
+    model_id = str(uuid.uuid4())
+    stored_name = f"{model_id}.stl"
+    model_dir = os.path.join(settings.DATA_DIR, "models", case_id)
+    os.makedirs(model_dir, exist_ok=True)
+    with open(os.path.join(model_dir, stored_name), "wb") as model_file:
+        model_file.write(mesh_bytes)
+    model = {
+        "id": model_id,
+        "version": 1,
+        "caseId": case_id,
+        "filename": f"ct-reconstruction-{model_id[:8]}.stl",
+        "format": "stl",
+        "structure": "combined",
+        "fileSizeBytes": len(mesh_bytes),
+        "sha256": hashlib.sha256(mesh_bytes).hexdigest(),
+        "uploadedAt": datetime.now(timezone.utc).isoformat(),
+        "storageName": stored_name,
+        "unit": "mm",
+        "unitVerified": True,
+        "provenance": "Patient CT threshold segmentation and marching-cubes surface extraction",
+        "isDemoMesh": False,
+        "qualityChecks": {
+            "watertightCheck": "not_computed",
+            "physicalCoordinates": True,
+            "thresholdHu": thresholdHu,
+            "limitations": "Research prototype; inspect segmentation and mesh before use.",
+        },
+        **stats,
+    }
+    case_store.update_case(case_id, {
+        "meshes": [*case.meshes, model],
+        "status": "models_generated",
+        "segmentationJob": {
+            **(case.segmentationJob or {}),
+            "status": "completed",
+            "thresholdHu": thresholdHu,
+            "reconstructionStatus": "completed",
+            "reconstructionAt": datetime.now(timezone.utc).isoformat(),
+            "meshId": model_id,
+            "qualityAssessment": model["qualityChecks"],
+        },
+    })
+    return {"status": "completed", "mesh": model}
 
 
 @router.post("/imaging/upload", response_model=DicomUploadResponse)
@@ -293,4 +439,3 @@ def get_case_imaging(
         )
 
     return case.imaging or {}
-

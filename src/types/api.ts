@@ -68,4 +68,6 @@ export interface DicomUploadResponse {
   reconstructionMessage: string;
   slices: SliceInfo[];
   primaryPreviewUrl?: string;
+  sourceFiles?: string[];
+  processingStatus?: string;
 }

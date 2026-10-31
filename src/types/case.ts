@@ -45,6 +45,9 @@ export interface CTSliceMetadata {
   reconstructionReadiness?: string;
   reconstructionMessage?: string;
   primaryPreviewUrl?: string;
+  sourceFiles?: string[];
+  slicePreviewUrls?: string[];
+  processingStatus?: string;
   fileCount?: number;
   uploadedFiles?: string[];
   sliceLocation?: number;
@@ -59,6 +62,30 @@ export interface AnatomicalLandmark {
   provenance: 'computed_geometric' | 'manual_annotated' | 'ai_inferred_prototype';
   confidenceScore?: number; // 0.0 - 1.0
   validationNotes?: string;
+  modelId?: string;
+  modelVersion?: number;
+  coordinateUnit?: 'unknown' | 'mm' | 'cm' | 'in';
+  unitVerified?: boolean;
+  verificationStatus?: 'unverified' | 'verified';
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SavedMeasurement {
+  id: string;
+  caseId: string;
+  modelId: string;
+  modelVersion: number;
+  pointA: [number, number, number];
+  pointB: [number, number, number];
+  rawDistance: number;
+  displayUnit: 'unknown' | 'mm' | 'cm' | 'in';
+  scaleVerified: boolean;
+  type: 'point_to_point';
+  provenance: 'manual' | 'computed';
+  label?: string;
+  notes?: string;
+  createdAt: string;
 }
 
 export interface MorphometricMeasurements {
@@ -78,6 +105,7 @@ export interface MorphometricMeasurements {
 
   calculationAlgorithm: string;
   validationStatus: 'provisional_unvalidated' | 'benchmark_verified' | 'peer_reviewed';
+  manualMeasurements?: SavedMeasurement[];
 }
 
 export interface ImplantPlanningConfig {
@@ -119,7 +147,7 @@ export interface SegmentationJob {
 
 export interface MeshArtifact {
   id: string;
-  structure: 'scapula' | 'humerus' | 'clavicle' | 'implant_glenoid' | 'implant_humerus';
+  structure: 'combined' | 'scapula' | 'humerus' | 'clavicle' | 'implant_glenoid' | 'implant_humerus';
   filename: string;
   format: 'stl' | 'obj' | 'ply' | 'vtk';
   vertexCount: number;
@@ -129,6 +157,17 @@ export interface MeshArtifact {
   isDemoMesh: boolean;
   provenance: string;
   localBlobUrl?: string;
+  caseId?: string;
+  version?: number;
+  fileSizeBytes?: number;
+  sha256?: string;
+  uploadedAt?: string;
+  unit?: 'unknown' | 'mm' | 'cm' | 'in';
+  unitVerified?: boolean;
+  boundingBox?: { x: number; y: number; z: number };
+  triangleCount?: number;
+  qualityChecks?: Record<string, unknown>;
+  storageName?: string;
 }
 
 export interface ClinicalReport {
@@ -159,4 +198,5 @@ export interface ResearchCase {
   measurements?: MorphometricMeasurements;
   implantPlan?: ImplantPlanningConfig;
   reports: ClinicalReport[];
+  createdByUserId?: string;
 }

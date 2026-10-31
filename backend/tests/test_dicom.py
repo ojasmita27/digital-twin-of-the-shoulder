@@ -348,3 +348,73 @@ def test_volumetric_readiness_30_contiguous_slices(auth_headers):
     assert data["volumeDimensionsMm"] is not None
 
 
+def test_patient_ct_segmentation_and_reconstruction_persist(auth_headers):
+    create_res = client.post(
+        "/api/cases",
+        json={
+            "name": "CT Reconstruction Subject",
+            "demographics": {"researchSubjectId": "SUBJ-RECON-01", "affectedSide": "right"},
+        },
+        headers=auth_headers,
+    )
+    assert create_res.status_code == 201
+    case_id = create_res.json()["id"]
+    files = [
+        ("files", (f"slice_{index}.dcm", create_synthetic_dicom_bytes(
+            rows=16, cols=16, instance_number=index + 1, slice_location=float(index)
+        ), "application/dicom"))
+        for index in range(4)
+    ]
+    upload = client.post(f"/api/cases/{case_id}/imaging/upload", files=files, headers=auth_headers)
+    assert upload.status_code == 200
+    assert len(upload.json()["sourceFiles"]) == 4
+
+    segmentation = client.post(
+        f"/api/cases/{case_id}/imaging/segmentation?thresholdHu=300",
+        headers=auth_headers,
+    )
+    assert segmentation.status_code == 200
+    assert segmentation.json()["status"] == "completed"
+    assert segmentation.json()["voxelCount"] > 0
+
+    reconstruction = client.post(
+        f"/api/cases/{case_id}/imaging/reconstruct?thresholdHu=300",
+        headers=auth_headers,
+    )
+    assert reconstruction.status_code == 200
+    model = reconstruction.json()["mesh"]
+    assert model["isDemoMesh"] is False
+    assert model["provenance"].startswith("Patient CT")
+    assert model["triangleCount"] > 0
+
+    reopened = client.get(f"/api/cases/{case_id}", headers=auth_headers)
+    assert reopened.status_code == 200
+    assert reopened.json()["status"] == "models_generated"
+    assert reopened.json()["meshes"][0]["id"] == model["id"]
+
+
+def test_patient_ct_reconstruction_reports_empty_segmentation(auth_headers):
+    create_res = client.post(
+        "/api/cases",
+        json={
+            "name": "Empty Segmentation Subject",
+            "demographics": {"researchSubjectId": "SUBJ-RECON-EMPTY", "affectedSide": "left"},
+        },
+        headers=auth_headers,
+    )
+    case_id = create_res.json()["id"]
+    files = [
+        ("files", (f"slice_{index}.dcm", create_synthetic_dicom_bytes(
+            rows=16, cols=16, instance_number=index + 1, slice_location=float(index)
+        ), "application/dicom"))
+        for index in range(3)
+    ]
+    upload = client.post(f"/api/cases/{case_id}/imaging/upload", files=files, headers=auth_headers)
+    assert upload.status_code == 200
+    reconstruction = client.post(
+        f"/api/cases/{case_id}/imaging/reconstruct?thresholdHu=3000",
+        headers=auth_headers,
+    )
+    assert reconstruction.status_code == 422
+    assert "Segmentation is empty" in reconstruction.json()["detail"]
+

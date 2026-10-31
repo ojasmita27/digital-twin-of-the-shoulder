@@ -8,6 +8,9 @@ Hounsfield unit scaling, and slice preview rendering using pydicom, numpy, and P
 import base64
 import io
 import math
+import os
+import struct
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -319,6 +322,33 @@ def analyze_dicom_series(
     primary_meta = deduped_slices[0][0]
     slice_count = len(deduped_slices)
 
+    # A CT volume must have a consistent acquisition geometry. Missing geometry
+    # is not safe to silently replace with defaults for reconstruction.
+    orientations = [
+        tuple(round(float(value), 5) for value in meta.get("imageOrientationPatient", []))
+        for meta, _ in deduped_slices
+    ]
+    if any(len(orientation) != 6 for orientation in orientations):
+        raise DicomValidationError(
+            "The series is missing ImageOrientationPatient on one or more slices; "
+            "physical orientation cannot be established."
+        )
+    first_orientation = orientations[0]
+    if any(orientation != first_orientation for orientation in orientations[1:]):
+        raise DicomValidationError("The uploaded series has inconsistent image orientation vectors.")
+
+    spacings = [
+        tuple(round(float(value), 5) for value in meta.get("pixelSpacingMm", []))
+        for meta, _ in deduped_slices
+    ]
+    if any(len(spacing) != 2 or any(value <= 0 for value in spacing) for spacing in spacings):
+        raise DicomValidationError("The series contains missing or invalid pixel spacing.")
+    if any(spacing != spacings[0] for spacing in spacings[1:]):
+        raise DicomValidationError("The uploaded series has inconsistent pixel spacing.")
+    dimensions = {(meta.get("rows"), meta.get("columns")) for meta, _ in deduped_slices}
+    if len(dimensions) != 1:
+        raise DicomValidationError("The uploaded series has inconsistent image dimensions.")
+
     # 5. Spacing, Gaps, and Bounding Volume calculations
     spacings: List[float] = []
     gap_warnings: List[str] = []
@@ -401,3 +431,107 @@ def analyze_dicom_series(
         "reconstructionReadiness": readiness,
         "reconstructionMessage": recon_msg,
     }
+
+
+def load_volume_from_files(
+    file_paths: List[str],
+) -> Tuple[Any, Dict[str, Any]]:
+    """Load an ordered CT volume and its physical geometry from unchanged DICOM files."""
+    if not PYDICOM_AVAILABLE or not IMAGING_AVAILABLE:
+        raise DicomValidationError("pydicom and numpy are required for CT volume reconstruction.")
+    parsed: List[Tuple[Dict[str, Any], Optional[str]]] = []
+    datasets: Dict[str, Any] = {}
+    for path in file_paths:
+        with open(path, "rb") as source:
+            ds = parse_dicom_dataset(source.read(), filename=os.path.basename(path))
+        meta = extract_safe_metadata(ds, os.path.basename(path), os.path.getsize(path))
+        parsed.append((meta, None))
+        datasets[meta["sopInstanceUid"]] = ds
+    analysis = analyze_dicom_series(parsed)
+    ordered = analysis["sorted_slices"]
+    arrays = []
+    for meta, _ in ordered:
+        ds = datasets.get(meta["sopInstanceUid"])
+        if ds is None or not hasattr(ds, "pixel_array"):
+            raise DicomValidationError(f"Slice '{meta['filename']}' has no readable pixel data.")
+        values = ds.pixel_array.astype(np.float32)
+        values = values * float(meta["rescaleSlope"]) + float(meta["rescaleIntercept"])
+        arrays.append(values)
+    volume = np.stack(arrays, axis=0)
+    analysis["originMm"] = ordered[0][0].get("imagePositionPatient")
+    analysis["orientation"] = ordered[0][0].get("imageOrientationPatient")
+    analysis["spacingMm"] = [
+        float(ordered[0][0]["sliceSpacingMm"]) if "sliceSpacingMm" in ordered[0][0] else float(analysis["sliceSpacingMm"]),
+        float(ordered[0][0]["pixelSpacingMm"][0]),
+        float(ordered[0][0]["pixelSpacingMm"][1]),
+    ]
+    return volume, analysis
+
+
+def extract_patient_space_mesh(
+    volume: Any,
+    analysis: Dict[str, Any],
+    threshold_hu: float = 300.0,
+) -> Tuple[bytes, Dict[str, Any]]:
+    """Extract a binary STL from actual CT voxels in patient coordinates."""
+    if not IMAGING_AVAILABLE:
+        raise DicomValidationError("numpy is required for CT reconstruction.")
+    try:
+        from skimage.measure import marching_cubes
+    except ImportError as exc:
+        raise DicomValidationError(
+            "scikit-image is not installed; marching-cubes reconstruction is unavailable."
+        ) from exc
+
+    mask = volume >= threshold_hu
+    voxel_count = int(mask.sum())
+    if voxel_count == 0:
+        raise DicomValidationError(
+            f"Segmentation is empty at threshold {threshold_hu:.1f} HU; lower the threshold or upload a bone CT series."
+        )
+    if voxel_count == int(mask.size):
+        raise DicomValidationError("Segmentation fills the entire volume; the threshold is not suitable for reconstruction.")
+    if min(mask.shape) < 2:
+        raise DicomValidationError("The CT volume is too small for surface extraction.")
+
+    spacing = analysis["spacingMm"]
+    vertices, faces, normals, _ = marching_cubes(mask.astype(np.uint8), level=0.5, spacing=spacing)
+    orientation = np.asarray(analysis["orientation"], dtype=np.float64)
+    row_direction = orientation[:3]
+    column_direction = orientation[3:]
+    normal_direction = np.cross(row_direction, column_direction)
+    origin = np.asarray(analysis["originMm"], dtype=np.float64)
+    # marching_cubes axes are [slice, row, column].
+    transform = np.column_stack((normal_direction, row_direction, column_direction))
+    vertices = origin + vertices @ transform.T
+
+    header = b"ShoulderTwin patient CT reconstruction".ljust(80, b"\0")
+    output = io.BytesIO()
+    output.write(header)
+    output.write(struct.pack("<I", len(faces)))
+    for face in faces:
+        normal = normals[face].mean(axis=0)
+        normal_length = float(np.linalg.norm(normal))
+        if normal_length:
+            normal = normal / normal_length
+        output.write(struct.pack("<3f", *normal))
+        for vertex_index in face:
+            output.write(struct.pack("<3f", *vertices[vertex_index]))
+        output.write(struct.pack("<H", 0))
+    mesh_bytes = output.getvalue()
+    mins = vertices.min(axis=0)
+    maxs = vertices.max(axis=0)
+    stats = {
+        "vertexCount": int(len(vertices)),
+        "triangleCount": int(len(faces)),
+        "faceCount": int(len(faces)),
+        "voxelCount": voxel_count,
+        "thresholdHu": threshold_hu,
+        "boundingBox": {
+            "x": round(float(maxs[0] - mins[0]), 3),
+            "y": round(float(maxs[1] - mins[1]), 3),
+            "z": round(float(maxs[2] - mins[2]), 3),
+        },
+        "physicalCoordinateSystem": "DICOM patient LPS",
+    }
+    return mesh_bytes, stats

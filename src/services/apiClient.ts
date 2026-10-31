@@ -9,7 +9,7 @@ import {
   BackendConfig,
   DicomUploadResponse,
 } from '../types/api';
-import { ResearchCase } from '../types/case';
+import { MeshArtifact, ResearchCase } from '../types/case';
 
 export const PRODUCTION_RENDER_BACKEND = 'https://digital-twin-of-the-shoulder.onrender.com';
 
@@ -85,6 +85,7 @@ export class ApiClient {
   private config: BackendConfig;
   private healthState: BackendHealthState;
   private healthListeners: Set<(state: BackendHealthState) => void> = new Set();
+  private unauthorizedHandler: (() => void) | null = null;
 
   constructor() {
     this.config = getBackendConfig();
@@ -132,6 +133,10 @@ export class ApiClient {
     return { ...this.config };
   }
 
+  public setUnauthorizedHandler(handler: (() => void) | null): void {
+    this.unauthorizedHandler = handler;
+  }
+
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<ApiCallResult<T>> {
     const start = performance.now();
     const rawBase = (this.config.baseUrl || '').trim().replace(/\/+$/, '');
@@ -156,6 +161,9 @@ export class ApiClient {
       });
       clearTimeout(timeout);
       const durationMs = Math.round(performance.now() - start);
+      if (response.status === 401) {
+        this.unauthorizedHandler?.();
+      }
 
       if (!response.ok) {
         const errorDetail = !this.config.baseUrl
@@ -164,6 +172,15 @@ export class ApiClient {
         return {
           data: null,
           error: errorDetail,
+          status: response.status,
+          durationMs,
+        };
+      }
+
+      if (response.status === 204) {
+        return {
+          data: { success: true } as T,
+          error: null,
           status: response.status,
           durationMs,
         };
@@ -231,6 +248,13 @@ export class ApiClient {
     return this.request<ResearchCase>(`/api/cases/${encodeURIComponent(caseId)}`, { method: 'GET' });
   }
 
+  public async updateCase(caseId: string, updates: Partial<ResearchCase>): Promise<ApiCallResult<ResearchCase>> {
+    return this.request<ResearchCase>(`/api/cases/${encodeURIComponent(caseId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+  }
+
   public async createCase(payload: {
     name: string;
     demographics: ResearchCase['demographics'];
@@ -246,6 +270,51 @@ export class ApiClient {
     return this.request<{ success: boolean }>(`/api/cases/${encodeURIComponent(caseId)}`, {
       method: 'DELETE',
     });
+  }
+
+  public async uploadModel(caseId: string, file: File, metadata: Record<string, unknown>): Promise<ApiCallResult<{ model: MeshArtifact }>> {
+    const rawBase = (this.config.baseUrl || '').trim().replace(/\/+$/, '');
+    const endpoint = `/api/cases/${encodeURIComponent(caseId)}/models`;
+    const formData = new FormData();
+    formData.append('file', file, file.name);
+    formData.append('metadata', JSON.stringify(metadata));
+    try {
+      const response = await fetch(`${rawBase}${endpoint}`, {
+        method: 'POST',
+        body: formData,
+        headers: this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {},
+      });
+      const json = await response.json().catch(() => ({}));
+      if (response.status === 401) this.unauthorizedHandler?.();
+      if (!response.ok) {
+        return { data: null, error: `HTTP ${response.status}: ${json.detail || response.statusText}`, status: response.status, durationMs: 0 };
+      }
+      return { data: json as { model: MeshArtifact }, error: null, status: response.status, durationMs: 0 };
+    } catch (error) {
+      return { data: null, error: error instanceof Error ? error.message : 'Model upload failed.', status: null, durationMs: 0 };
+    }
+  }
+
+  public async downloadModel(caseId: string, modelId: string): Promise<ApiCallResult<ArrayBuffer>> {
+    const rawBase = (this.config.baseUrl || '').trim().replace(/\/+$/, '');
+    const endpoint = `/api/cases/${encodeURIComponent(caseId)}/models/${encodeURIComponent(modelId)}/file`;
+    try {
+      const response = await fetch(`${rawBase}${endpoint}`, {
+        headers: this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {},
+      });
+      if (response.status === 401) this.unauthorizedHandler?.();
+      if (!response.ok) return { data: null, error: `HTTP ${response.status}: ${response.statusText}`, status: response.status, durationMs: 0 };
+      return { data: await response.arrayBuffer(), error: null, status: response.status, durationMs: 0 };
+    } catch (error) {
+      return { data: null, error: error instanceof Error ? error.message : 'Model download failed.', status: null, durationMs: 0 };
+    }
+  }
+
+  public async deleteModel(caseId: string, modelId: string): Promise<ApiCallResult<{ success: boolean }>> {
+    return this.request<{ success: boolean }>(
+      `/api/cases/${encodeURIComponent(caseId)}/models/${encodeURIComponent(modelId)}`,
+      { method: 'DELETE' },
+    );
   }
 
   /**
@@ -282,6 +351,9 @@ export class ApiClient {
       });
       clearTimeout(timeout);
       const durationMs = Math.round(performance.now() - start);
+      if (response.status === 401) {
+        this.unauthorizedHandler?.();
+      }
 
       if (!response.ok) {
         let detailText = '';
@@ -348,6 +420,20 @@ export class ApiClient {
         method: 'POST',
         body: JSON.stringify({ model: modelName, targetStructures: structures }),
       }
+    );
+  }
+
+  public async segmentCase(caseId: string, thresholdHu = 300): Promise<ApiCallResult<Record<string, unknown>>> {
+    return this.request<Record<string, unknown>>(
+      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation?thresholdHu=${thresholdHu}`,
+      { method: 'POST' },
+    );
+  }
+
+  public async reconstructCase(caseId: string, thresholdHu = 300): Promise<ApiCallResult<Record<string, unknown>>> {
+    return this.request<Record<string, unknown>>(
+      `/api/cases/${encodeURIComponent(caseId)}/imaging/reconstruct?thresholdHu=${thresholdHu}`,
+      { method: 'POST' },
     );
   }
 }

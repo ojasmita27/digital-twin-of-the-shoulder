@@ -9,13 +9,15 @@ import backend.app.storage as storage_module
 import backend.app.dependencies as deps_module
 import backend.app.routers.cases as cases_router
 import backend.app.routers.auth as auth_router
+import backend.app.routers.models as models_router
+from backend.app.config import settings
 from backend.app.models.case import CaseCreateRequest, PatientDemographics, AnatomicalSide
 
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def isolated_test_database():
+def isolated_test_database(monkeypatch, tmp_path):
     """
     Creates an isolated temporary SQLite database for each test function,
     overriding the global case_store in the routers and dependencies.
@@ -28,11 +30,14 @@ def isolated_test_database():
     orig_cases_store = cases_router.case_store
     orig_deps_store = deps_module.case_store
     orig_auth_store = auth_router.case_store
+    orig_models_store = models_router.case_store
 
     storage_module.case_store = test_store
     cases_router.case_store = test_store
     deps_module.case_store = test_store
     auth_router.case_store = test_store
+    models_router.case_store = test_store
+    monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path))
 
     yield test_store
 
@@ -40,6 +45,7 @@ def isolated_test_database():
     cases_router.case_store = orig_cases_store
     deps_module.case_store = orig_deps_store
     auth_router.case_store = orig_auth_store
+    models_router.case_store = orig_models_store
     if os.path.exists(temp_db_path):
         try:
             os.remove(temp_db_path)
@@ -128,6 +134,59 @@ def test_get_case_not_found(auth_headers):
     response = client.get("/api/cases/SHL-9999-NONEXISTENT", headers=auth_headers)
     assert response.status_code == 404
     assert "not found" in response.json()["detail"].lower()
+
+
+def test_model_upload_persists_file_metadata_and_download(auth_headers, isolated_test_database):
+    payload = {
+        "name": "Model Persistence Subject",
+        "demographics": {
+            "researchSubjectId": "MODEL-001",
+            "ageBand": "41-60",
+            "biologicalSex": "undisclosed",
+            "indication": "Research Normative",
+            "affectedSide": "right",
+        },
+    }
+    case_id = client.post("/api/cases", json=payload, headers=auth_headers).json()["id"]
+    model_bytes = b"solid shoulder\nendsolid shoulder\n"
+    response = client.post(
+        f"/api/cases/{case_id}/models",
+        files={"file": ("shoulder.stl", model_bytes, "application/sla")},
+        data={"metadata": json.dumps({"vertexCount": 3, "triangleCount": 1, "validationStatus": "valid"})},
+        headers=auth_headers,
+    )
+    assert response.status_code == 201
+    model = response.json()["model"]
+    assert model["filename"] == "shoulder.stl"
+    assert model["vertexCount"] == 3
+    assert model["unit"] == "unknown"
+
+    case = client.get(f"/api/cases/{case_id}", headers=auth_headers).json()
+    assert case["meshes"][0]["id"] == model["id"]
+    downloaded = client.get(f"/api/cases/{case_id}/models/{model['id']}/file", headers=auth_headers)
+    assert downloaded.status_code == 200
+    assert downloaded.content == model_bytes
+
+
+def test_model_upload_requires_case_access(auth_headers, isolated_test_database):
+    payload = {
+        "name": "Protected Model Subject",
+        "demographics": {
+            "researchSubjectId": "MODEL-002",
+            "ageBand": "41-60",
+            "biologicalSex": "undisclosed",
+            "indication": "Research Normative",
+            "affectedSide": "right",
+        },
+    }
+    case_id = client.post("/api/cases", json=payload, headers=auth_headers).json()["id"]
+    response = client.post(
+        f"/api/cases/{case_id}/models",
+        files={"file": ("shoulder.exe", b"not a model", "application/octet-stream")},
+        headers=auth_headers,
+    )
+    assert response.status_code == 400
+    assert "supported" in response.json()["detail"].lower()
 
 
 def test_delete_case(auth_headers):
@@ -261,4 +320,3 @@ def test_invalid_input_handling(auth_headers):
         headers=auth_headers,
     )
     assert res_bad_side.status_code == 422
-

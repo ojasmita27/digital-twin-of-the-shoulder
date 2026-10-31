@@ -5,6 +5,7 @@
 
 import React, { useState } from 'react';
 import { ResearchCase, SegmentationJob } from '../../types/case';
+import { apiClient } from '../../services/apiClient';
 import { ANATOMY_IMAGES } from '../../assets/anatomyImages';
 import {
   Cpu,
@@ -28,6 +29,7 @@ interface SegmentationViewProps {
 
 export const SegmentationView: React.FC<SegmentationViewProps> = ({
   activeCase,
+  onUpdateJob,
   onNavigateToAnatomy,
 }) => {
   const [selectedModel, setSelectedModel] = useState('TotalSegmentator-Shoulder-CT');
@@ -35,6 +37,9 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
     'scapula',
     'humerus',
   ]);
+  const [thresholdHu, setThresholdHu] = useState(300);
+  const [processing, setProcessing] = useState(false);
+  const [resultMessage, setResultMessage] = useState<string | null>(null);
 
   const toggleStructure = (struct: 'scapula' | 'humerus' | 'clavicle') => {
     setSelectedStructures((prev) =>
@@ -43,6 +48,27 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
   };
 
   const imaging = activeCase?.imaging;
+
+  const runSegmentation = async () => {
+    if (!activeCase || activeCase.isDemo || !imaging?.sourceFiles?.length) return;
+    setProcessing(true);
+    setResultMessage(null);
+    const result = await apiClient.segmentCase(activeCase.id, thresholdHu);
+    if (!result.data) {
+      setResultMessage(result.error || 'Segmentation failed.');
+      setProcessing(false);
+      return;
+    }
+    const job = result.data as unknown as SegmentationJob;
+    onUpdateJob?.(job);
+    const reconstruction = await apiClient.reconstructCase(activeCase.id, thresholdHu);
+    setResultMessage(
+      reconstruction.data
+        ? 'Patient CT segmentation and surface reconstruction completed. Inspect the mask and mesh before research use.'
+        : reconstruction.error || 'Segmentation completed, but reconstruction failed.'
+    );
+    setProcessing(false);
+  };
 
   return (
     <div className="space-y-6 pb-12 max-w-7xl mx-auto">
@@ -69,7 +95,7 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
         <div className="flex items-center gap-2 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-1.5 rounded-md shadow-xs">
           <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400" />
           <span className="text-slate-500 dark:text-slate-400">Status:</span>
-          <span className="text-amber-700 dark:text-amber-300 font-medium">Model Integration Pending</span>
+          <span className="text-amber-700 dark:text-amber-300 font-medium">Threshold Prototype</span>
         </div>
       </div>
 
@@ -80,8 +106,7 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
           <span>GPU Deep-Learning Inference Pipeline in Development</span>
         </div>
         <p className="text-[11px] text-amber-800/85 dark:text-amber-200/80 leading-relaxed">
-          Automated multi-organ deep learning segmentation (TotalSegmentator / 3D V-Net) requires dedicated GPU acceleration (e.g. NVIDIA A10G / T4) which is not hosted on the basic lightweight FastAPI tier.
-          For research evaluation, you can import pre-segmented high-fidelity <strong>STL meshes (.stl)</strong> directly into the <strong>3D Reconstruction</strong> workspace or inspect the synthetic reference shoulder template.
+          This workflow currently uses a transparent HU threshold and marching-cubes surface extraction on the uploaded CT volume. It is not a pretrained model, does not identify anatomical structures separately, and requires inspection/correction before research use.
         </p>
         {onNavigateToAnatomy && (
           <div className="pt-1">
@@ -176,6 +201,25 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
                 <span>Surface Extraction:</span>
                 <span className="text-slate-800 dark:text-slate-200 font-medium">Marching Cubes (Iso=300)</span>
               </div>
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <label htmlFor="threshold-hu">Bone threshold (HU)</label>
+                <input
+                  id="threshold-hu"
+                  type="number"
+                  value={thresholdHu}
+                  onChange={(event) => setThresholdHu(Number(event.target.value))}
+                  className="w-24 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 py-1 text-right"
+                />
+              </div>
+              <button
+                type="button"
+                disabled={processing || !activeCase || activeCase.isDemo || !imaging?.sourceFiles?.length}
+                onClick={runSegmentation}
+                className="w-full rounded bg-teal-600 px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {processing ? 'Processing CT volume...' : 'Segment and reconstruct uploaded CT'}
+              </button>
+              {resultMessage && <p className="text-[11px] text-slate-600 dark:text-slate-400">{resultMessage}</p>}
             </div>
           </div>
         </div>

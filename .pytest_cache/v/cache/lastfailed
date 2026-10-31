@@ -1,1 +1,3 @@
-{}
+{
+  "backend/tests/test_security_audit.py::test_dev_seeding_disabled_in_production": true
+}

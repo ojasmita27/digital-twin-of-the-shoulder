@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { buildProceduralShoulder, ProceduralShoulderModel } from './ProceduralAnatomy';
 import { LandmarkMarkersManager } from './LandmarkMarkers';
-import { parseSTLArrayBuffer, LoadedMeshResult } from './STLLoaderUtil';
+import { parseModelArrayBuffer, LoadedMeshResult } from './STLLoaderUtil';
 import { AnatomicalLandmark } from '../../types/case';
 import {
   RotateCcw,
@@ -38,6 +38,7 @@ export type CameraPreset =
   | 'glenoid_en_face';
 
 export type ShadingMode = 'bone_ivory' | 'wireframe' | 'xray' | 'normal';
+type UnitScale = 'unknown' | 'mm' | 'cm' | 'in';
 
 interface ShoulderSceneProps {
   landmarks?: AnatomicalLandmark[];
@@ -45,7 +46,15 @@ interface ShoulderSceneProps {
   activeLandmarkId?: string | null;
   onSelectLandmark?: (landmark: AnatomicalLandmark | null) => void;
   customStlBuffer?: ArrayBuffer | null;
-  onMeshLoaded?: (meshInfo: LoadedMeshResult) => void;
+  customModelName?: string;
+  onMeshLoaded?: (meshInfo: LoadedMeshResult, file: { name: string; size: number; file: File; buffer: ArrayBuffer }) => void;
+  onMeshRemoved?: () => void;
+  onMeshError?: (message: string) => void;
+  onMeasurement?: (points: { pointA: [number, number, number]; pointB: [number, number, number]; distance: number }) => void;
+  landmarkMode?: boolean;
+  onLandmarkPoint?: (point: [number, number, number]) => void;
+  unitScale?: UnitScale;
+  onUnitScaleChange?: (unit: UnitScale) => void;
 }
 
 export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
@@ -54,7 +63,15 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   activeLandmarkId = null,
   onSelectLandmark,
   customStlBuffer = null,
+  customModelName = 'imported.stl',
   onMeshLoaded,
+  onMeshRemoved,
+  onMeshError,
+  onMeasurement,
+  landmarkMode = false,
+  onLandmarkPoint,
+  unitScale: unitScaleProp,
+  onUnitScaleChange,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -66,6 +83,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   // Model refs
   const modelRef = useRef<ProceduralShoulderModel | null>(null);
   const customMeshRef = useRef<THREE.Mesh | null>(null);
+  const measurementGroupRef = useRef<THREE.Group | null>(null);
   const landmarksManagerRef = useRef<LandmarkMarkersManager | null>(null);
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
   const axesHelperRef = useRef<THREE.AxesHelper | null>(null);
@@ -91,8 +109,45 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const [hoveredLandmark, setHoveredLandmark] = useState<AnatomicalLandmark | null>(null);
   const [activePreset, setActivePreset] = useState<CameraPreset>('anterior');
   const [loadedCustomName, setLoadedCustomName] = useState<string | null>(null);
+  const [customMeshError, setCustomMeshError] = useState<string | null>(null);
+  const [measureMode, setMeasureMode] = useState(false);
+  const [measurementDistance, setMeasurementDistance] = useState<number | null>(null);
+  const [unitScale, setUnitScale] = useState<UnitScale>(unitScaleProp || 'unknown');
+  const measureModeRef = useRef(false);
+  const landmarkModeRef = useRef(landmarkMode);
+  const onLandmarkPointRef = useRef(onLandmarkPoint);
+  const onMeasurementRef = useRef(onMeasurement);
+  useEffect(() => {
+    if (unitScaleProp) setUnitScale(unitScaleProp);
+  }, [unitScaleProp]);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    measureModeRef.current = measureMode;
+  }, [measureMode]);
+  useEffect(() => {
+    landmarkModeRef.current = landmarkMode;
+    onLandmarkPointRef.current = onLandmarkPoint;
+    onMeasurementRef.current = onMeasurement;
+  }, [landmarkMode, onLandmarkPoint, onMeasurement]);
+
+  const fitObjectToView = (object: THREE.Object3D) => {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!camera || !controls) return;
+    const box = new THREE.Box3().setFromObject(object);
+    if (box.isEmpty()) return;
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const distance = Math.max(sphere.radius * 2.4, 1);
+    controls.target.copy(sphere.center);
+    camera.position.copy(sphere.center).add(new THREE.Vector3(0, sphere.radius * 0.35, distance));
+    camera.near = Math.max(sphere.radius / 1000, 0.01);
+    camera.far = Math.max(sphere.radius * 20, 100);
+    camera.updateProjectionMatrix();
+    controls.minDistance = Math.max(sphere.radius * 0.05, 0.01);
+    controls.maxDistance = Math.max(sphere.radius * 20, 100);
+    controls.update();
+  };
 
   // Initialize Three.js scene once
   useEffect(() => {
@@ -181,6 +236,57 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     const landmarkMgr = new LandmarkMarkersManager();
     scene.add(landmarkMgr.getGroup());
     landmarksManagerRef.current = landmarkMgr;
+    const measurementGroup = new THREE.Group();
+    scene.add(measurementGroup);
+    measurementGroupRef.current = measurementGroup;
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const handleMeshClick = (event: MouseEvent) => {
+      if (!customMeshRef.current || (!measureModeRef.current && !landmarkModeRef.current)) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.set(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObject(customMeshRef.current, false)[0];
+      if (!hit || !measurementGroupRef.current) return;
+      if (landmarkModeRef.current) {
+        onLandmarkPointRef.current?.(hit.point.toArray() as [number, number, number]);
+        return;
+      }
+      const marker = new THREE.Mesh(
+        new THREE.SphereGeometry(Math.max(hit.distance * 0.012, 0.5), 12, 12),
+        new THREE.MeshBasicMaterial({ color: '#22d3ee' }),
+      );
+      marker.position.copy(hit.point);
+      measurementGroupRef.current.add(marker);
+      const points = measurementGroupRef.current.children.filter((child) => child instanceof THREE.Mesh);
+      if (points.length > 2) {
+        const first = points.shift();
+        if (first) {
+          first.geometry.dispose();
+          (first.material as THREE.Material).dispose();
+          measurementGroupRef.current.remove(first);
+        }
+      }
+      if (points.length === 2) {
+        const lineGeometry = new THREE.BufferGeometry().setFromPoints(
+          points.map((point) => point.position),
+        );
+        const line = new THREE.Line(lineGeometry, new THREE.LineBasicMaterial({ color: '#f59e0b' }));
+        measurementGroupRef.current.add(line);
+        const distance = points[0].position.distanceTo(points[1].position);
+        setMeasurementDistance(distance);
+        onMeasurementRef.current?.({
+          pointA: points[0].position.toArray() as [number, number, number],
+          pointB: points[1].position.toArray() as [number, number, number],
+          distance,
+        });
+      }
+    };
+    renderer.domElement.addEventListener('click', handleMeshClick);
 
     // Pre-warm shaders
     renderer.compile(scene, camera);
@@ -213,12 +319,49 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       resizeObserver.disconnect();
       controls.dispose();
+      renderer.domElement.removeEventListener('click', handleMeshClick);
       renderer.dispose();
       if (mount.contains(renderer.domElement)) {
         mount.removeChild(renderer.domElement);
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!customStlBuffer || !sceneRef.current) return;
+    try {
+      const meshInfo = parseModelArrayBuffer(customStlBuffer, customModelName);
+      if (customMeshRef.current) {
+        sceneRef.current.remove(customMeshRef.current);
+        customMeshRef.current.geometry.dispose();
+        (customMeshRef.current.material as THREE.Material).dispose();
+      }
+      const mesh = new THREE.Mesh(
+        meshInfo.geometry,
+        new THREE.MeshStandardMaterial({
+          color: '#e8dec9',
+          roughness: 0.65,
+          metalness: 0.05,
+          side: THREE.DoubleSide,
+        }),
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      meshInfo.geometry.center();
+      sceneRef.current.add(mesh);
+      customMeshRef.current = mesh;
+      setLoadedCustomName('Imported STL');
+      setCustomMeshError(null);
+      if (modelRef.current) modelRef.current.group.visible = false;
+      fitObjectToView(mesh);
+      const restoredFile = new File([customStlBuffer], customModelName, { type: 'application/octet-stream' });
+      onMeshLoaded?.(meshInfo, { name: restoredFile.name, size: restoredFile.size, file: restoredFile, buffer: customStlBuffer });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The STL file could not be parsed.';
+      setCustomMeshError(message);
+      onMeshError?.(message);
+    }
+  }, [customStlBuffer]);
 
   // Update Theme in Three.js Scene
   useEffect(() => {
@@ -287,6 +430,18 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
 
   // Update Shading Modes
   useEffect(() => {
+    const customMaterial = customMeshRef.current?.material;
+    if (customMaterial instanceof THREE.MeshStandardMaterial) {
+      customMaterial.wireframe = shadingMode === 'wireframe';
+      customMaterial.transparent = shadingMode === 'xray';
+      customMaterial.opacity = shadingMode === 'xray' ? 0.35 : 1;
+      customMaterial.color.set(
+        shadingMode === 'wireframe' ? '#06b6d4' :
+          shadingMode === 'normal' ? '#a7f3d0' :
+            shadingMode === 'xray' ? '#38bdf8' : '#e8dec9',
+      );
+      customMaterial.roughness = shadingMode === 'normal' ? 0.4 : 0.65;
+    }
     if (!modelRef.current) return;
     const { scapula, humerus } = modelRef.current.materials;
 
@@ -337,7 +492,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       humerus.color.set('#fde68a');
       humerus.roughness = 0.4;
     }
-  }, [shadingMode]);
+  }, [shadingMode, loadedCustomName]);
 
   // Handle Camera Presets
   const applyCameraPreset = (preset: CameraPreset) => {
@@ -377,7 +532,11 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   };
 
   const handleResetCamera = () => {
-    applyCameraPreset('anterior');
+    if (customMeshRef.current) {
+      fitObjectToView(customMeshRef.current);
+    } else {
+      applyCameraPreset('anterior');
+    }
   };
 
   // Fullscreen toggle
@@ -396,13 +555,31 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    e.target.value = '';
+    const fail = (message: string) => {
+      setCustomMeshError(message);
+      onMeshError?.(message);
+    };
+    const extension = file.name.toLowerCase().split('.').pop();
+    if (extension !== 'stl' && extension !== 'ply' && extension !== 'obj') {
+      fail('Only STL, PLY, and OBJ files are supported.');
+      return;
+    }
+    if (file.size === 0) {
+      fail('The selected STL file is empty.');
+      return;
+    }
+    if (file.size > 100 * 1024 * 1024) {
+      fail('The STL file exceeds the 100 MB size limit.');
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = (event) => {
       const buffer = event.target?.result as ArrayBuffer;
       if (buffer) {
         try {
-          const meshInfo = parseSTLArrayBuffer(buffer);
+          const meshInfo = parseModelArrayBuffer(buffer, file.name);
           if (sceneRef.current) {
             // Remove previous custom mesh if exists
             if (customMeshRef.current) {
@@ -427,6 +604,8 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
             sceneRef.current.add(mesh);
             customMeshRef.current = mesh;
             setLoadedCustomName(file.name);
+            setCustomMeshError(null);
+            fitObjectToView(mesh);
 
             // Hide procedural model when custom mesh is mounted
             if (modelRef.current) {
@@ -434,20 +613,54 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
             }
 
             if (onMeshLoaded) {
-              onMeshLoaded(meshInfo);
+              onMeshLoaded(meshInfo, { name: file.name, size: file.size, file, buffer });
             }
           }
         } catch (err) {
-          console.error('Failed to parse STL', err);
+          fail(err instanceof Error ? err.message : 'The STL file could not be parsed.');
         }
       }
     };
+    reader.onerror = () => fail('The STL file could not be read.');
     reader.readAsArrayBuffer(file);
+  };
+
+  const removeCustomMesh = () => {
+    if (customMeshRef.current && sceneRef.current) {
+      sceneRef.current.remove(customMeshRef.current);
+      customMeshRef.current.geometry.dispose();
+      (customMeshRef.current.material as THREE.Material).dispose();
+      customMeshRef.current = null;
+    }
+    setLoadedCustomName(null);
+    setCustomMeshError(null);
+    if (modelRef.current) modelRef.current.group.visible = true;
+    onMeshRemoved?.();
+    applyCameraPreset('anterior');
+  };
+
+  const clearMeasurement = () => {
+    measurementGroupRef.current?.clear();
+    setMeasurementDistance(null);
   };
 
   return (
     <div
       ref={containerRef}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        const file = event.dataTransfer.files[0];
+        if (file) {
+          const input = document.createElement('input');
+          input.type = 'file';
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(file);
+          input.files = dataTransfer.files;
+          input.onchange = (changeEvent) => handleFileUpload(changeEvent as unknown as React.ChangeEvent<HTMLInputElement>);
+          input.click();
+        }
+      }}
       className={`relative w-full h-full min-h-[540px] bg-slate-50 dark:bg-slate-950 select-none overflow-hidden flex flex-col ${
         isFullscreen ? 'fixed inset-0 z-50' : 'rounded-lg border border-slate-200 dark:border-slate-800 shadow-xs'
       }`}
@@ -488,9 +701,30 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
           title="Import Patient STL Mesh"
         >
           <Upload className="w-3.5 h-3.5 text-teal-600 dark:text-cyan-400" />
-          <span className="font-medium">Import STL</span>
-          <input type="file" accept=".stl" className="hidden" onChange={handleFileUpload} />
+          <span className="font-medium">Import 3D Model</span>
+          <input type="file" accept=".stl,.ply,.obj" className="hidden" onChange={handleFileUpload} />
         </label>
+        {loadedCustomName && (
+          <button
+            onClick={removeCustomMesh}
+            className="px-2 py-1 text-[11px] text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded"
+          >
+            Remove
+          </button>
+        )}
+        {loadedCustomName && (
+          <button
+            onClick={() => setMeasureMode((active) => !active)}
+            className={`px-2 py-1 text-[11px] rounded ${measureMode ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200' : 'text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+          >
+            {measureMode ? 'Measuring…' : 'Measure'}
+          </button>
+        )}
+        {measurementDistance !== null && (
+          <button onClick={clearMeasurement} className="px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded">
+            Clear ({(measurementDistance * (unitScale === 'cm' ? 0.1 : unitScale === 'in' ? 1 / 25.4 : 1)).toFixed(2)} {unitScale === 'unknown' ? 'unverified units' : unitScale})
+          </button>
+        )}
 
         <div className="h-4 w-px bg-slate-200 dark:bg-slate-800 mx-1" />
 
@@ -510,6 +744,37 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
           {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
         </button>
       </div>
+      {customMeshError && (
+        <div className="absolute top-16 right-4 max-w-xs bg-rose-50 dark:bg-rose-950/90 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-200 rounded-md px-3 py-2 text-xs shadow-lg">
+          {customMeshError}
+        </div>
+      )}
+      {measureMode && loadedCustomName && (
+        <div className="absolute bottom-20 left-4 bg-slate-900/90 text-cyan-200 rounded-md px-3 py-2 text-xs shadow-lg">
+          Click two points on the imported mesh to measure a geometric distance.
+        </div>
+      )}
+      {loadedCustomName && (
+        <div className="absolute bottom-20 right-4 bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-800 rounded-md px-3 py-2 text-[11px] text-slate-700 dark:text-slate-300 shadow-lg">
+          <label className="flex items-center gap-2">
+            <span>Model units:</span>
+            <select
+              value={unitScale}
+              onChange={(event) => {
+                const nextUnit = event.target.value as UnitScale;
+                setUnitScale(nextUnit);
+                onUnitScaleChange?.(nextUnit);
+              }}
+              className="bg-transparent border border-slate-300 dark:border-slate-700 rounded px-1 py-0.5"
+            >
+              <option value="unknown">Unverified</option>
+              <option value="mm">Millimetres</option>
+              <option value="cm">Centimetres</option>
+              <option value="in">Inches</option>
+            </select>
+          </label>
+        </div>
+      )}
 
       {/* Unified Bottom Control Dock */}
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[95%] max-w-4xl z-20 flex flex-col items-center">
