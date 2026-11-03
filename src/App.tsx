@@ -11,6 +11,7 @@ import { SystemNotificationsDrawer, SystemNotification } from './components/layo
 import { caseStorage, DEMO_CASE } from './services/caseStorage';
 import { apiClient } from './services/apiClient';
 import { ResearchCase } from './types/case';
+import { useAuth } from './context/AuthContext';
 
 // Views
 import { OverviewView } from './components/views/OverviewView';
@@ -32,6 +33,7 @@ export default function App() {
 
   const [isLoadingCases, setIsLoadingCases] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
+  const { isAuthenticated } = useAuth();
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -101,7 +103,7 @@ export default function App() {
   useEffect(() => {
     let previousStatus: string | null = null;
     const unsubscribe = apiClient.subscribeHealth((state) => {
-      if (state.status === 'connected' && previousStatus !== 'connected') {
+      if (isAuthenticated && state.status === 'connected' && previousStatus !== 'connected') {
         fetchCases();
       } else if (state.status === 'unreachable') {
         setBackendError(state.error || 'FastAPI backend is disconnected.');
@@ -109,7 +111,7 @@ export default function App() {
       previousStatus = state.status;
     });
     return unsubscribe;
-  }, []);
+  }, [isAuthenticated]);
 
   const handleSelectCase = async (caseId: string) => {
     caseStorage.setActiveCaseId(caseId);

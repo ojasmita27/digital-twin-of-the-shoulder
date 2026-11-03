@@ -29,7 +29,12 @@ interface CTViewerProps {
 
 export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceChange }) => {
   const [orientation, setOrientation] = useState<SliceOrientation>('axial');
-  const [sliceIndex, setSliceIndex] = useState(1);
+  const [sliceIndices, setSliceIndices] = useState<Record<SliceOrientation, number>>({
+    axial: 1,
+    coronal: 1,
+    sagittal: 1,
+  });
+  const sliceIndex = sliceIndices[orientation];
   const totalSlices = metadata?.sliceCount || 168;
   const isRealSeries = Boolean(metadata?.sourceFiles?.length);
   const [realPreview, setRealPreview] = useState<{ ctPreviewUrl: string; maskPreviewUrl?: string | null } | null>(null);
@@ -59,7 +64,10 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceCha
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setSliceIndex((current) => Math.min(current, planeSliceCount));
+    setSliceIndices((current) => ({
+      ...current,
+      [orientation]: Math.min(current[orientation], planeSliceCount),
+    }));
   }, [planeSliceCount]);
 
   useEffect(() => {
@@ -81,8 +89,11 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceCha
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const axialPreview = realPreview?.ctPreviewUrl || metadata?.slicePreviewUrls?.[sliceIndex - 1] || metadata?.primaryPreviewUrl;
-    if (axialPreview && orientation === 'axial') {
+    const previewUrl = realPreview?.ctPreviewUrl
+      || (orientation === 'axial'
+        ? metadata?.slicePreviewUrls?.[sliceIndex - 1] || metadata?.primaryPreviewUrl
+        : undefined);
+    if (previewUrl) {
       const img = new Image();
       img.onload = () => {
         const ctx = canvas.getContext('2d');
@@ -120,8 +131,8 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceCha
           ctx.stroke();
         }
       };
-      img.src = axialPreview;
-    } else if (isRealSeries) {
+      img.src = previewUrl;
+    } else if (isRealSeries && !realPreview) {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       ctx.fillStyle = '#020617';
@@ -129,8 +140,7 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceCha
       ctx.fillStyle = '#94a3b8';
       ctx.font = '14px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`${orientation.toUpperCase()} reconstruction preview is not available`, canvas.width / 2, canvas.height / 2 - 8);
-      ctx.fillText('Use axial slices or run reconstruction after segmentation.', canvas.width / 2, canvas.height / 2 + 18);
+      ctx.fillText(`Loading ${orientation.toUpperCase()} CT preview...`, canvas.width / 2, canvas.height / 2);
     } else {
       const normalizedSlice = Math.max(0, Math.min(1, sliceIndex / planeSliceCount));
       DicomSimulator.renderSlice(
@@ -175,10 +185,11 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceCha
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const delta = Math.sign(e.deltaY);
-    setSliceIndex((prev) => {
+    setSliceIndices((current) => {
+      const prev = current[orientation];
       const next = Math.max(1, Math.min(planeSliceCount, prev + delta));
       if (onSliceChange) onSliceChange(next);
-      return next;
+      return { ...current, [orientation]: next };
     });
   };
 
@@ -493,7 +504,10 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceCha
       <div className="flex items-center justify-between gap-4 px-4 py-2.5 bg-slate-900 border-t border-slate-800 text-xs">
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setSliceIndex((s) => Math.max(1, s - 1))}
+            onClick={() => setSliceIndices((current) => ({
+              ...current,
+              [orientation]: Math.max(1, current[orientation] - 1),
+            }))}
             className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
           >
             <ChevronLeft className="w-4 h-4" />
@@ -502,7 +516,10 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceCha
             {sliceIndex} / {planeSliceCount}
           </span>
           <button
-            onClick={() => setSliceIndex((s) => Math.min(planeSliceCount, s + 1))}
+            onClick={() => setSliceIndices((current) => ({
+              ...current,
+              [orientation]: Math.min(planeSliceCount, current[orientation] + 1),
+            }))}
             className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
           >
             <ChevronRight className="w-4 h-4" />
@@ -519,7 +536,7 @@ export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceCha
             value={sliceIndex}
             onChange={(e) => {
               const val = Number(e.target.value);
-              setSliceIndex(val);
+              setSliceIndices((current) => ({ ...current, [orientation]: val }));
               if (onSliceChange) onSliceChange(val);
             }}
             className="flex-1 h-1.5 bg-slate-800 rounded-lg cursor-pointer"

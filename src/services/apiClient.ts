@@ -551,10 +551,17 @@ export class ApiClient {
     );
   }
 
-  public async segmentCase(caseId: string, thresholdHu = 300, maxThresholdHu?: number): Promise<ApiCallResult<Record<string, unknown>>> {
+  public async segmentCase(
+    caseId: string,
+    thresholdHu = 300,
+    maxThresholdHu?: number,
+    model = 'threshold-hu',
+    structures: string[] = ['scapula', 'humerus'],
+  ): Promise<ApiCallResult<Record<string, unknown>>> {
     const maxQuery = maxThresholdHu === undefined ? '' : `&maxThresholdHu=${maxThresholdHu}`;
+    const structureQuery = encodeURIComponent(structures.join(','));
     return this.request<Record<string, unknown>>(
-      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation?thresholdHu=${thresholdHu}${maxQuery}`,
+      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation?thresholdHu=${thresholdHu}${maxQuery}&model=${encodeURIComponent(model)}&structures=${structureQuery}`,
       { method: 'POST' },
     );
   }

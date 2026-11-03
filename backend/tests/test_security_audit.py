@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
-from backend.app.config import settings
+from backend.app.config import settings, validate_startup_configuration
 from backend.app.models.user import UserRole
 from backend.app.storage.sqlite import SqliteCaseStore
 import backend.app.storage as storage_module
@@ -407,3 +407,12 @@ def test_dev_seeding_disabled_in_production(monkeypatch):
 
     if os.path.exists(prod_db_path):
         os.remove(prod_db_path)
+
+
+def test_production_startup_rejects_dev_seeding(monkeypatch):
+    """Production startup must fail closed if development seeding is enabled."""
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "ALLOW_DEV_SEEDING", True)
+
+    with pytest.raises(RuntimeError, match="ALLOW_DEV_SEEDING"):
+        validate_startup_configuration()

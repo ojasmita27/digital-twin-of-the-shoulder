@@ -11,6 +11,7 @@ PERSISTENCE BEHAVIOR:
 """
 
 from datetime import datetime, timezone, timedelta
+from contextlib import contextmanager
 import json
 import os
 import sqlite3
@@ -38,7 +39,8 @@ class SqliteCaseStore:
         self.db_path = db_path or settings.DATABASE_PATH
         self._init_db()
 
-    def _get_connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_connection(self):
         # Ensure parent directory exists
         parent_dir = os.path.dirname(os.path.abspath(self.db_path))
         if parent_dir and not os.path.exists(parent_dir):
@@ -46,7 +48,10 @@ class SqliteCaseStore:
 
         conn = sqlite3.connect(self.db_path, timeout=15.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         """Create database tables and indices if they do not exist, and seed baseline accounts."""

@@ -144,9 +144,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     } catch {
       return {
-        success: true,
-        resetToken: 'simulated-reset-token-2026',
-        message: 'Password reset registered (offline mode).',
+        success: false,
+        message: 'Password reset is unavailable while the backend is disconnected.',
+        error: 'Connection error during password reset request.',
       };
     }
   };

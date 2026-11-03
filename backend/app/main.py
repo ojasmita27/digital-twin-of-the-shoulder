@@ -1,13 +1,14 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .config import settings
+from .config import settings, validate_startup_configuration
 from .routers import health, cases, imaging, auth, models
 from .storage import case_store
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_startup_configuration()
     case_store._init_db()
     yield
 

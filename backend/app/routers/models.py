@@ -61,6 +61,34 @@ class MeasurementPayload(BaseModel):
     label: Optional[str] = None
 
 
+class ImplantPlanningPayload(BaseModel):
+    patientModelId: str
+    patientModelVersion: int
+    implantAssetId: str
+    implantAssetVersion: int
+    implantTransform: Dict[str, Any]
+    procedureType: Optional[str] = None
+    glenoidComponent: Optional[Dict[str, Any]] = None
+    humeralComponent: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = None
+    implantMeasurement: Optional[Dict[str, Any]] = None
+    planningStatus: Optional[str] = None
+
+
+class ImplantReferencePointPayload(BaseModel):
+    implantAssetId: str
+    implantAssetVersion: int
+    name: str
+    coordinatesLocal: List[float]
+    coordinateUnit: str = "unknown"
+    unitVerified: bool = False
+
+
+class ImplantReferencePointUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    coordinatesLocal: Optional[List[float]] = None
+
+
 def _validate_point(point: List[float], name: str) -> List[float]:
     try:
         values = [float(value) for value in point]
@@ -153,6 +181,51 @@ def _resolve_measurement_refs(case: ResearchCase, payload: MeasurementPayload, m
         else:
             raise HTTPException(status_code=422, detail="Point references must use landmark or implant_reference kinds.")
     return resolved
+
+
+def _recalculate_reference_measurement(
+    case: ResearchCase,
+    measurement: Dict[str, Any],
+    model: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Recalculate a saved measurement against the current implant transform."""
+    refs = measurement.get("pointRefs")
+    if not isinstance(refs, list):
+        return measurement
+    payload = MeasurementPayload(
+        type=str(measurement.get("type", "point_to_point")),
+        modelId=str(model["id"]),
+        modelVersion=int(model.get("version", 1)),
+        pointRefs=refs,
+        implantAssetId=measurement.get("implantAssetId"),
+        displayUnit=str(measurement.get("displayUnit", "unknown")),
+        label=measurement.get("label"),
+    )
+    points = _resolve_measurement_refs(case, payload, model)
+    point_a, point_b = points[0], points[1]
+    distance = math.sqrt(sum((point_b[index] - point_a[index]) ** 2 for index in range(3)))
+    unit_factors = {"mm": 1.0, "cm": 0.1, "in": 1 / 25.4, "unknown": 1.0}
+    updated = {
+        **measurement,
+        "pointA": point_a,
+        "pointB": point_b,
+        "rawDistance": distance,
+        "displayDistance": round(distance * unit_factors[payload.displayUnit], 6),
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "geometryStatus": "current",
+    }
+    if payload.type == "angle" and len(points) == 3:
+        point_c = points[2]
+        vector_ba = [point_a[index] - point_b[index] for index in range(3)]
+        vector_bc = [point_c[index] - point_b[index] for index in range(3)]
+        norm_ba = math.sqrt(sum(value * value for value in vector_ba))
+        norm_bc = math.sqrt(sum(value * value for value in vector_bc))
+        if norm_ba <= 0 or norm_bc <= 0:
+            raise HTTPException(status_code=422, detail="Saved angle measurement has coincident points.")
+        cosine = max(-1.0, min(1.0, sum(vector_ba[index] * vector_bc[index] for index in range(3)) / (norm_ba * norm_bc)))
+        updated["pointC"] = point_c
+        updated["angleDegrees"] = math.degrees(math.acos(cosine))
+    return updated
 
 
 def _case_for_user(case_id: str, authorization: Optional[str], modify: bool = False) -> ResearchCase:
@@ -304,10 +377,12 @@ async def create_case_measurement(
         "scaleVerified": payload.displayUnit == model.get("unit", "unknown") and bool(model.get("unitVerified")),
         "provenance": "manual",
         "createdAt": datetime.now(timezone.utc).isoformat(),
+        "geometryStatus": "current",
     }
     if payload.pointRefs is not None:
         result["pointRefs"] = payload.pointRefs
         result["implantAssetId"] = payload.implantAssetId
+        result["implantPlanUpdatedAt"] = (case.implantPlan or {}).get("updatedAt")
     if payload.type == "angle":
         if point_c is None:
             raise HTTPException(status_code=422, detail="Angle measurement requires pointC.")
@@ -418,20 +493,21 @@ async def download_case_implant(
 @router.put("/cases/{case_id}/implant-planning")
 async def save_case_implant_planning(
     case_id: str,
-    payload: Dict[str, Any],
+    payload: ImplantPlanningPayload,
     authorization: Optional[str] = Header(None),
 ):
     case = _case_for_user(case_id, authorization, modify=True)
-    model = _model_for_case(case, str(payload.get("patientModelId", "")))
-    if int(payload.get("patientModelVersion", -1)) != int(model.get("version", 1)):
+    payload_data = payload.model_dump(exclude_none=True)
+    model = _model_for_case(case, payload.patientModelId)
+    if payload.patientModelVersion != int(model.get("version", 1)):
         raise HTTPException(status_code=409, detail="The planning patient model version is outdated.")
-    implant = _implant_for_case(case, str(payload.get("implantAssetId", "")))
-    if int(payload.get("implantAssetVersion", -1)) != int(implant.get("version", 1)):
+    implant = _implant_for_case(case, payload.implantAssetId)
+    if payload.implantAssetVersion != int(implant.get("version", 1)):
         raise HTTPException(status_code=409, detail="The planning implant asset version is outdated.")
-    transform = _finite_transform(payload.get("implantTransform") or {})
+    transform = _finite_transform(payload.implantTransform)
     if transform["unitVerified"] and transform["coordinateUnit"] != model.get("unit", "unknown"):
         raise HTTPException(status_code=422, detail="Verified implant transform units must match the patient model units.")
-    implant_measurement = payload.get("implantMeasurement")
+    implant_measurement = payload.implantMeasurement
     if implant_measurement is not None:
         landmark_id = str(implant_measurement.get("landmarkId", ""))
         landmark = next((item for item in case.landmarks if item.get("id") == landmark_id), None)
@@ -454,13 +530,39 @@ async def save_case_implant_planning(
             "displayUnit": implant_measurement.get("displayUnit", "unknown"),
         }
     plan = {
-        **payload,
+        **payload_data,
         "implantTransform": transform,
         **({"implantMeasurement": implant_measurement} if implant_measurement is not None else {}),
         "planningStatus": "saved",
         "updatedAt": datetime.now(timezone.utc).isoformat(),
     }
-    if not case_store.update_case(case_id, {"implantPlan": plan, "status": "planning_in_progress"}):
+    if hasattr(case, "model_copy"):
+        recalculation_case = case.model_copy(update={"implantPlan": plan})
+    else:
+        recalculation_case = case.copy(update={"implantPlan": plan})
+    planning_measurements = [
+        _recalculate_reference_measurement(recalculation_case, item, model)
+        if item.get("pointRefs") else item
+        for item in case.planningMeasurements
+    ]
+    manual_measurements = [
+        _recalculate_reference_measurement(recalculation_case, item, model)
+        if item.get("pointRefs") else item
+        for item in (case.measurements or {}).get("manualMeasurements", [])
+    ]
+    measurement_updates = {
+        **(case.measurements or {}),
+        "manualMeasurements": manual_measurements,
+    }
+    if not case_store.update_case(
+        case_id,
+        {
+            "implantPlan": plan,
+            "planningMeasurements": planning_measurements,
+            "measurements": measurement_updates,
+            "status": "planning_in_progress",
+        },
+    ):
         raise HTTPException(status_code=500, detail="The implant planning state could not be saved.")
     return plan
 
@@ -491,21 +593,21 @@ async def list_implant_reference_points(case_id: str, authorization: Optional[st
 @router.post("/cases/{case_id}/implant-reference-points", status_code=status.HTTP_201_CREATED)
 async def create_implant_reference_point(
     case_id: str,
-    payload: Dict[str, Any],
+    payload: ImplantReferencePointPayload,
     authorization: Optional[str] = Header(None),
 ):
     case = _case_for_user(case_id, authorization, modify=True)
-    implant = _implant_for_case(case, str(payload.get("implantAssetId", "")))
+    implant = _implant_for_case(case, payload.implantAssetId)
     try:
-        coordinates = _validate_point(payload.get("coordinatesLocal"), "coordinatesLocal")
+        coordinates = _validate_point(payload.coordinatesLocal, "coordinatesLocal")
     except TypeError:
         raise HTTPException(status_code=422, detail="coordinatesLocal must contain three numeric values.")
-    name = str(payload.get("name", "")).strip()
+    name = payload.name.strip()
     if not name or len(name) > 120:
         raise HTTPException(status_code=422, detail="Reference point name must be between 1 and 120 characters.")
-    if _validated_version(payload.get("implantAssetVersion"), "implantAssetVersion must be a positive integer.") != int(implant.get("version", 1)):
+    if payload.implantAssetVersion != int(implant.get("version", 1)):
         raise HTTPException(status_code=409, detail="The implant reference point asset version is outdated.")
-    unit = payload.get("coordinateUnit", implant.get("unit", "unknown"))
+    unit = payload.coordinateUnit
     if unit not in {"unknown", "mm", "cm", "in"}:
         raise HTTPException(status_code=422, detail="Reference point coordinateUnit is invalid.")
     now = datetime.now(timezone.utc).isoformat()
@@ -517,7 +619,7 @@ async def create_implant_reference_point(
         "name": name,
         "coordinatesLocal": coordinates,
         "coordinateUnit": unit,
-        "unitVerified": bool(payload.get("unitVerified", False)),
+        "unitVerified": payload.unitVerified,
         "createdAt": now,
         "updatedAt": now,
     }
@@ -530,7 +632,7 @@ async def create_implant_reference_point(
 async def update_implant_reference_point(
     case_id: str,
     point_id: str,
-    payload: Dict[str, Any],
+    payload: ImplantReferencePointUpdatePayload,
     authorization: Optional[str] = Header(None),
 ):
     case = _case_for_user(case_id, authorization, modify=True)
@@ -539,13 +641,14 @@ async def update_implant_reference_point(
     if _validated_version(existing.get("implantAssetVersion", 1), "The stored implant reference point version is invalid.") != int(implant.get("version", 1)):
         raise HTTPException(status_code=409, detail="The implant reference point is stale.")
     updated = {**existing}
-    if "name" in payload:
-        name = str(payload["name"]).strip()
+    payload_data = payload.model_dump(exclude_unset=True)
+    if "name" in payload_data:
+        name = str(payload_data["name"]).strip()
         if not name or len(name) > 120:
             raise HTTPException(status_code=422, detail="Reference point name must be between 1 and 120 characters.")
         updated["name"] = name
-    if "coordinatesLocal" in payload:
-        updated["coordinatesLocal"] = _validate_point(payload["coordinatesLocal"], "coordinatesLocal")
+    if "coordinatesLocal" in payload_data:
+        updated["coordinatesLocal"] = _validate_point(payload_data["coordinatesLocal"], "coordinatesLocal")
     updated["updatedAt"] = datetime.now(timezone.utc).isoformat()
     points = [updated if item.get("id") == point_id else item for item in case.implantReferencePoints]
     if not case_store.update_case(case_id, {"implantReferencePoints": points}):

@@ -13,6 +13,16 @@ The current segmentation is an explicit Hounsfield-unit threshold prototype, fol
 
 FastAPI backend service for patient-specific shoulder anatomy reconstruction and preoperative planning.
 
+### Production deployment
+
+The production container sets `ENVIRONMENT=production` and
+`ALLOW_DEV_SEEDING=false`; do not override these values. Startup fails
+closed if production is configured to seed development accounts. Mount a
+persistent volume at `DATA_DIR` and set `DATABASE_PATH` inside that volume
+so SQLite, uploaded DICOM files, segmentation masks, and reconstructed
+models survive container restarts. These files must remain private and
+must not be served as public static assets.
+
 > **PERSISTENCE STATUS (Phase 1C Completed)**:
 > This service uses a local SQLite-backed repository (`data/shoulder_twin.db`).
 > All ResearchCase metadata (demographics, status, timestamps, imaging metadata, segmentation job state, meshes, landmarks, morphometrics, implant plans, and reports) **persist across server restarts**.

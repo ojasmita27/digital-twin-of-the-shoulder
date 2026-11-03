@@ -33,7 +33,7 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
   onUpdateJob,
   onNavigateToAnatomy,
 }) => {
-  const [selectedModel, setSelectedModel] = useState('TotalSegmentator-Shoulder-CT');
+  const [selectedModel, setSelectedModel] = useState('threshold-hu');
   const [selectedStructures, setSelectedStructures] = useState<('scapula' | 'humerus' | 'clavicle')[]>([
     'scapula',
     'humerus',
@@ -67,7 +67,13 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
       setProcessing(false);
       return;
     }
-    const result = await apiClient.segmentCase(activeCase.id, thresholdHu, maxThresholdHu);
+    const result = await apiClient.segmentCase(
+      activeCase.id,
+      thresholdHu,
+      maxThresholdHu,
+      selectedModel,
+      selectedStructures,
+    );
     if (!result.data) {
       setResultMessage(result.error || 'Segmentation failed.');
       setProcessing(false);
@@ -75,7 +81,7 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
     }
     const job = result.data as unknown as SegmentationJob;
     onUpdateJob?.(job);
-    setResultMessage('Segmentation mask saved from the uploaded CT. Inspect or correct it before rebuilding the patient mesh.');
+    setResultMessage('Threshold segmentation mask saved from the uploaded CT. Inspect or correct it before rebuilding the patient mesh.');
     setProcessing(false);
   };
 
@@ -252,12 +258,10 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
                 onChange={(e) => setSelectedModel(e.target.value)}
                 className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded px-3 py-2 text-xs text-slate-800 dark:text-slate-200 focus:outline-hidden font-mono"
               >
-                <option value="TotalSegmentator-Shoulder-CT">TotalSegmentator v2 (nnU-Net 3D)</option>
-                <option value="VNet-Glenoid-Vault">V-Net Anatomical Vault Resampler</option>
-                <option value="MONAI-DynUNet-Bones">MONAI DynUNet (Isotropic 1.0mm)</option>
+                <option value="threshold-hu">HU threshold segmentation (prototype)</option>
               </select>
               <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
-                Trained on 1,200+ multi-scanner musculoskeletal CT datasets.
+                Uses uploaded CT voxel values; no AI model weights are installed.
               </p>
             </div>
 

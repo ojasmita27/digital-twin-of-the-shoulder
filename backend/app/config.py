@@ -19,6 +19,9 @@ class Settings:
         "ALLOW_DEV_SEEDING",
         "false" if os.getenv("ENVIRONMENT") == "production" else "true"
     ).lower() == "true"
+    REQUIRE_PRODUCTION_CONFIG: bool = os.getenv(
+        "REQUIRE_PRODUCTION_CONFIG", "true"
+    ).lower() == "true"
 
     # Explicit allowed CORS origins (Wildcard '*' is forbidden with allow_credentials=True)
     @property
@@ -40,3 +43,14 @@ class Settings:
 
 settings = Settings()
 
+
+def validate_startup_configuration() -> None:
+    """Fail closed when production is accidentally configured with dev seeding."""
+    if settings.ENVIRONMENT == "production" and settings.ALLOW_DEV_SEEDING:
+        raise RuntimeError(
+            "Production startup blocked: ALLOW_DEV_SEEDING must be false."
+        )
+    if settings.ENVIRONMENT == "production" and not settings.REQUIRE_PRODUCTION_CONFIG:
+        raise RuntimeError(
+            "Production startup blocked: REQUIRE_PRODUCTION_CONFIG must remain true."
+        )

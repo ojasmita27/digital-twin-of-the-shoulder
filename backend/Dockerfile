@@ -6,6 +6,8 @@ WORKDIR /app
 # Prevent Python from writing .pyc files & enable unbuffered logs
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    ENVIRONMENT=production \
+    ALLOW_DEV_SEEDING=false \
     PORT=8001 \
     DATA_DIR=/app/data \
     DATABASE_PATH=/app/data/shoulder_twin.db

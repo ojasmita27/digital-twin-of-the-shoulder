@@ -32,6 +32,8 @@ router = APIRouter(prefix="/api", tags=["imaging"])
 
 
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB per file limit
+SUPPORTED_SEGMENTATION_MODELS = {"threshold-hu"}
+SUPPORTED_STRUCTURES = {"scapula", "humerus", "clavicle"}
 
 
 class SliceInfo(BaseModel):
@@ -330,10 +332,24 @@ async def segment_case_ct(
     case_id: str,
     thresholdHu: float = 300.0,
     maxThresholdHu: Optional[float] = None,
+    model: str = "threshold-hu",
+    structures: Optional[str] = None,
     authorization: Optional[str] = Header(None),
 ):
     """Create a versioned mask from actual persisted CT HU values."""
     user, case = _owned_case_for_modify(case_id, authorization)
+    if model not in SUPPORTED_SEGMENTATION_MODELS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported segmentation model '{model}'. Available models: threshold-hu.",
+        )
+    selected_structures = [value.strip() for value in (structures or "scapula,humerus").split(",") if value.strip()]
+    unsupported_structures = sorted(set(selected_structures) - SUPPORTED_STRUCTURES)
+    if unsupported_structures:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported anatomical structures: {', '.join(unsupported_structures)}.",
+        )
     if maxThresholdHu is not None and thresholdHu >= maxThresholdHu:
         raise HTTPException(status_code=422, detail="Minimum threshold must be lower than maximum threshold.")
     paths = _series_paths(case_id, case)
@@ -364,6 +380,8 @@ async def segment_case_ct(
         "jobId": segmentation_id,
         "status": "completed",
         "method": "threshold",
+        "model": model,
+        "structures": selected_structures,
         "thresholdHu": thresholdHu,
         "maxThresholdHu": maxThresholdHu,
         "maskStorageName": os.path.basename(mask_path),
