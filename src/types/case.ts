@@ -238,6 +238,14 @@ export interface MeshArtifact {
   storageName?: string;
 }
 
+export interface ViewerPreferences {
+  scapulaVisible: boolean;
+  humerusVisible: boolean;
+  landmarksVisible: boolean;
+  selectedModelId?: string;
+  selectedSliceIndex?: number;
+}
+
 export interface ClinicalReport {
   reportId: string;
   caseId: string;
@@ -269,5 +277,6 @@ export interface ResearchCase {
   implantReferencePoints?: ImplantReferencePoint[];
   planningMeasurements?: PlanningMeasurement[];
   reports: ClinicalReport[];
+  viewerPreferences?: ViewerPreferences;
   createdByUserId?: string;
 }

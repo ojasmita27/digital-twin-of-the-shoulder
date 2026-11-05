@@ -83,6 +83,7 @@ class SqliteCaseStore:
                     implant_assets_json TEXT NOT NULL DEFAULT '[]',
                     implant_reference_points_json TEXT NOT NULL DEFAULT '[]',
                     reports_json TEXT NOT NULL DEFAULT '[]',
+                    viewer_preferences_json TEXT,
                     created_by_user_id TEXT,
                     is_archived INTEGER NOT NULL DEFAULT 0
                 )
@@ -95,6 +96,8 @@ class SqliteCaseStore:
                 cursor.execute("ALTER TABLE cases ADD COLUMN implant_reference_points_json TEXT NOT NULL DEFAULT '[]'")
             if "planning_measurements_json" not in existing_columns:
                 cursor.execute("ALTER TABLE cases ADD COLUMN planning_measurements_json TEXT NOT NULL DEFAULT '[]'")
+            if "viewer_preferences_json" not in existing_columns:
+                cursor.execute("ALTER TABLE cases ADD COLUMN viewer_preferences_json TEXT")
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_cases_created_at ON cases(created_at DESC)"
             )
@@ -579,6 +582,11 @@ class SqliteCaseStore:
             else []
         )
         reports = json.loads(row["reports_json"]) if row["reports_json"] else []
+        viewer_preferences = (
+            json.loads(row["viewer_preferences_json"])
+            if "viewer_preferences_json" in row.keys() and row["viewer_preferences_json"]
+            else None
+        )
 
         created_by_user_id = row["created_by_user_id"] if "created_by_user_id" in row.keys() else None
 
@@ -600,6 +608,7 @@ class SqliteCaseStore:
             implantReferencePoints=implant_reference_points,
             planningMeasurements=planning_measurements,
             reports=reports,
+            viewerPreferences=viewer_preferences,
             createdByUserId=created_by_user_id,
         )
 
@@ -778,6 +787,9 @@ class SqliteCaseStore:
         reports = updates.get("reports", existing.reports)
         reports_json = json.dumps(reports) if reports is not None else "[]"
 
+        viewer_preferences = updates.get("viewerPreferences", existing.viewerPreferences)
+        viewer_preferences_json = json.dumps(viewer_preferences) if viewer_preferences is not None else None
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -798,7 +810,8 @@ class SqliteCaseStore:
                     implant_assets_json = ?,
                     implant_reference_points_json = ?,
                     planning_measurements_json = ?,
-                    reports_json = ?
+                    reports_json = ?,
+                    viewer_preferences_json = ?
                 WHERE id = ?
                 """,
                 (
@@ -818,6 +831,7 @@ class SqliteCaseStore:
                     implant_reference_points_json,
                     planning_measurements_json,
                     reports_json,
+                    viewer_preferences_json,
                     case_id,
                 ),
             )

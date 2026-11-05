@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { ResearchCase, AnatomicalLandmark, SavedMeasurement, MeshArtifact } from '../../types/case';
+import { ResearchCase, AnatomicalLandmark, SavedMeasurement, MeshArtifact, ViewerPreferences } from '../../types/case';
 import { ShoulderScene } from '../three/ShoulderScene';
 import { LoadedMeshResult } from '../three/STLLoaderUtil';
 import { apiClient } from '../../services/apiClient';
@@ -45,13 +45,42 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   const restoringModel = useRef(false);
   const [activeTab, setActiveTab] = useState<'hierarchy' | 'landmarks' | 'geometry'>('hierarchy');
   const [geometryExpanded, setGeometryExpanded] = useState(false);
+  const [viewerPreferences, setViewerPreferences] = useState<ViewerPreferences>(() => ({
+    scapulaVisible: activeCase?.viewerPreferences?.scapulaVisible ?? true,
+    humerusVisible: activeCase?.viewerPreferences?.humerusVisible ?? true,
+    landmarksVisible: activeCase?.viewerPreferences?.landmarksVisible ?? true,
+    selectedModelId: activeCase?.viewerPreferences?.selectedModelId,
+    selectedSliceIndex: activeCase?.viewerPreferences?.selectedSliceIndex,
+  }));
 
-  const savedModel = [...(activeCase?.meshes || [])].reverse().find((mesh) => !mesh.isDemoMesh) as MeshArtifact | undefined;
+  const patientMeshes = (activeCase?.meshes || []).filter((mesh) => !mesh.isDemoMesh);
+  const savedModel = (
+    patientMeshes.find((mesh) => mesh.id === viewerPreferences.selectedModelId) || patientMeshes[patientMeshes.length - 1]
+  ) as MeshArtifact | undefined;
+  const hasSeparatePatientBones = patientMeshes.some((mesh) => mesh.structure === 'scapula')
+    && patientMeshes.some((mesh) => mesh.structure === 'humerus');
   const landmarks = (activeCase?.landmarks || []).filter((landmark) => (
     !savedModel || (landmark.modelId === savedModel.id && landmark.modelVersion === (savedModel.version || 1))
   ));
   const isProceduralTemplate = !customMeshInfo && (!activeCase?.meshes || activeCase.meshes.length === 0);
   const staleLandmarkCount = (activeCase?.landmarks || []).length - landmarks.length;
+
+  useEffect(() => {
+    setViewerPreferences({
+      scapulaVisible: activeCase?.viewerPreferences?.scapulaVisible ?? true,
+      humerusVisible: activeCase?.viewerPreferences?.humerusVisible ?? true,
+      landmarksVisible: activeCase?.viewerPreferences?.landmarksVisible ?? true,
+      selectedModelId: activeCase?.viewerPreferences?.selectedModelId,
+      selectedSliceIndex: activeCase?.viewerPreferences?.selectedSliceIndex,
+    });
+  }, [activeCase?.id, activeCase?.viewerPreferences]);
+
+  const persistViewerPreferences = (next: ViewerPreferences) => {
+    setViewerPreferences(next);
+    if (activeCase && !activeCase.isDemo) {
+      persistCase({ viewerPreferences: next });
+    }
+  };
 
   const updateLandmark = async (landmarkId: string, updates: Partial<AnatomicalLandmark>) => {
     if (!activeCase || !savedModel) return;
@@ -245,6 +274,57 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                   {staleLandmarkCount > 0 && (
                     <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
                       {staleLandmarkCount} landmark(s) belong to another mesh version and are hidden until that model is reopened.
+                    </div>
+                  )}
+                  <div className="rounded border border-slate-200 dark:border-slate-800 p-3 space-y-2">
+                    <div className="flex items-center justify-between font-semibold text-slate-800 dark:text-slate-200">
+                      <span>Patient model structures</span>
+                      <span className={`text-[10px] font-mono ${hasSeparatePatientBones ? 'text-emerald-600' : 'text-amber-600'}`}>
+                        {hasSeparatePatientBones ? 'SEPARATE MESHES' : 'COMBINED / UNSUPPORTED'}
+                      </span>
+                    </div>
+                    {!hasSeparatePatientBones && (
+                      <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                        The saved reconstruction does not contain independently labeled scapula and humerus meshes. Structure toggles remain available for the procedural template only; no anatomy is fabricated.
+                      </p>
+                    )}
+                    {patientMeshes.length > 0 && (
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {patientMeshes.length} saved version{patientMeshes.length === 1 ? '' : 's'} · current v{savedModel?.version || 1}
+                      </div>
+                    )}
+                  </div>
+
+                  {patientMeshes.length > 1 && (
+                    <div className="rounded border border-slate-200 dark:border-slate-800 p-3 space-y-2">
+                      <div className="font-semibold text-slate-800 dark:text-slate-200">Model comparison</div>
+                      {patientMeshes.slice(-2).map((mesh, index, recent) => (
+                        <button
+                          key={mesh.id}
+                          type="button"
+                          onClick={() => persistViewerPreferences({ ...viewerPreferences, selectedModelId: mesh.id })}
+                          className={`w-full flex items-center justify-between text-[11px] text-left rounded px-1 ${mesh.id === savedModel?.id ? 'bg-teal-50 dark:bg-cyan-950/30' : ''}`}
+                        >
+                          <span>v{mesh.version || 1} · {mesh.structure} · {mesh.filename}</span>
+                          <span className={index === recent.length - 1 ? 'text-emerald-600' : 'text-amber-600'}>
+                            {mesh.id === savedModel?.id ? 'SELECTED' : index === recent.length - 1 ? 'CURRENT' : 'OUTDATED'}
+                          </span>
+                        </button>
+                      ))}
+                      {patientMeshes.length >= 2 && (() => {
+                        const previous = patientMeshes[patientMeshes.length - 2];
+                        const current = patientMeshes[patientMeshes.length - 1];
+                        const vertexDelta = (current.vertexCount || 0) - (previous.vertexCount || 0);
+                        const faceDelta = (current.faceCount || current.triangleCount || 0) - (previous.faceCount || previous.triangleCount || 0);
+                        return (
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                            Stored geometry delta: vertices {vertexDelta >= 0 ? '+' : ''}{vertexDelta}, faces {faceDelta >= 0 ? '+' : ''}{faceDelta}
+                          </div>
+                        );
+                      })()}
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                        Geometry comparison is limited to stored mesh metadata; a voxel/mesh registration difference is not computed by this client.
+                      </p>
                     </div>
                   )}
                   <div className="p-3 rounded-md bg-slate-50 dark:bg-slate-950 border border-slate-200/90 dark:border-slate-800 space-y-1">
@@ -541,6 +621,13 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
             customStlBuffer={customMeshBuffer}
             customModelName={savedModel?.filename || 'restored-model.stl'}
             unitScale={savedModel?.unit || 'unknown'}
+            scapulaVisible={viewerPreferences.scapulaVisible}
+            humerusVisible={viewerPreferences.humerusVisible}
+            showLandmarks={viewerPreferences.landmarksVisible}
+            onVisibilityChange={(visibility) => persistViewerPreferences({
+              ...viewerPreferences,
+              ...visibility,
+            })}
             activeLandmarkId={selectedLandmark?.id}
             onSelectLandmark={setSelectedLandmark}
             landmarkMode={landmarkMode}
@@ -640,8 +727,22 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                 validationStatus: info.validationStatus,
               });
               if (upload.data) {
+                const nextPreferences = {
+                  ...viewerPreferences,
+                  selectedModelId: upload.data.model.id,
+                };
+                const preferenceSave = await apiClient.updateCase(activeCase.id, {
+                  viewerPreferences: nextPreferences,
+                });
+                if (!preferenceSave.data) {
+                  setSaveStatus('failed');
+                  setMeshError(preferenceSave.error || 'The selected model could not be persisted.');
+                  return;
+                }
+                setViewerPreferences(nextPreferences);
                 caseStorage.updateCase(activeCase.id, {
                   meshes: [...(activeCase.meshes || []), upload.data.model],
+                  viewerPreferences: nextPreferences,
                 });
                 setSaveStatus('saved');
               } else {

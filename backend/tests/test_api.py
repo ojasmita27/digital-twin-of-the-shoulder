@@ -130,6 +130,37 @@ def test_create_and_get_case(auth_headers):
     assert get_res.json()["id"] == case_id
 
 
+def test_viewer_preferences_persist(auth_headers):
+    payload = {
+        "name": "Viewer Preference Subject",
+        "demographics": {
+            "researchSubjectId": "VIEW-001",
+            "ageBand": "41-60",
+            "biologicalSex": "undisclosed",
+            "indication": "Research Normative",
+            "affectedSide": "right",
+        },
+    }
+    case_id = client.post("/api/cases", json=payload, headers=auth_headers).json()["id"]
+    preferences = {
+        "scapulaVisible": False,
+        "humerusVisible": True,
+        "landmarksVisible": False,
+        "selectedSliceIndex": 12,
+    }
+    update_res = client.patch(
+        f"/api/cases/{case_id}",
+        json={"viewerPreferences": preferences},
+        headers=auth_headers,
+    )
+    assert update_res.status_code == 200
+    assert update_res.json()["viewerPreferences"] == preferences
+
+    refreshed = client.get(f"/api/cases/{case_id}", headers=auth_headers)
+    assert refreshed.status_code == 200
+    assert refreshed.json()["viewerPreferences"] == preferences
+
+
 def test_get_case_not_found(auth_headers):
     response = client.get("/api/cases/SHL-9999-NONEXISTENT", headers=auth_headers)
     assert response.status_code == 404

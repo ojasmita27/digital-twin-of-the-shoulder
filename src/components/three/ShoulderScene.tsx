@@ -85,6 +85,10 @@ interface ShoulderSceneProps {
   onSelectImplantReferencePoint?: (point: ImplantReferencePoint | null) => void;
   measurementOverlays?: SceneMeasurementOverlay[];
   showMeasurementOverlays?: boolean;
+  scapulaVisible?: boolean;
+  humerusVisible?: boolean;
+  showLandmarks?: boolean;
+  onVisibilityChange?: (visibility: { scapulaVisible: boolean; humerusVisible: boolean; landmarksVisible: boolean }) => void;
 }
 
 export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
@@ -121,6 +125,10 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   onSelectImplantReferencePoint,
   measurementOverlays = [],
   showMeasurementOverlays = true,
+  scapulaVisible: scapulaVisibleProp,
+  humerusVisible: humerusVisibleProp,
+  showLandmarks: showLandmarksProp,
+  onVisibilityChange,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -165,6 +173,9 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const [measureMode, setMeasureMode] = useState(false);
   const [measurementDistance, setMeasurementDistance] = useState<number | null>(null);
   const [unitScale, setUnitScale] = useState<UnitScale>(unitScaleProp || 'unknown');
+  const resolvedScapulaVisible = scapulaVisibleProp ?? scapulaVisible;
+  const resolvedHumerusVisible = humerusVisibleProp ?? humerusVisible;
+  const resolvedShowLandmarks = showLandmarksProp ?? showLandmarks;
   const measureModeRef = useRef(false);
   const landmarkModeRef = useRef(landmarkMode);
   const onLandmarkPointRef = useRef(onLandmarkPoint);
@@ -607,9 +618,9 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   useEffect(() => {
     if (landmarksManagerRef.current) {
       landmarksManagerRef.current.updateLandmarks(landmarks, activeLandmarkId);
-      landmarksManagerRef.current.setVisible(showLandmarks);
+      landmarksManagerRef.current.setVisible(resolvedShowLandmarks);
     }
-  }, [landmarks, activeLandmarkId, showLandmarks]);
+  }, [landmarks, activeLandmarkId, resolvedShowLandmarks]);
 
   // Update Implants visibility
   useEffect(() => {
@@ -629,11 +640,11 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   // Update Component Visibilities
   useEffect(() => {
     if (modelRef.current) {
-      modelRef.current.scapulaGroup.visible = scapulaVisible;
-      modelRef.current.humerusGroup.visible = humerusVisible;
+      modelRef.current.scapulaGroup.visible = resolvedScapulaVisible;
+      modelRef.current.humerusGroup.visible = resolvedHumerusVisible;
       modelRef.current.materials.cartilage.visible = cartilageVisible;
     }
-  }, [scapulaVisible, humerusVisible, cartilageVisible]);
+  }, [resolvedScapulaVisible, resolvedHumerusVisible, cartilageVisible]);
 
   // Update Helpers
   useEffect(() => {
@@ -1061,8 +1072,11 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
                 <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white">
                   <input
                     type="checkbox"
-                    checked={scapulaVisible}
-                    onChange={(e) => setScapulaVisible(e.target.checked)}
+                    checked={resolvedScapulaVisible}
+                    onChange={(e) => {
+                      setScapulaVisible(e.target.checked);
+                      onVisibilityChange?.({ scapulaVisible: e.target.checked, humerusVisible: resolvedHumerusVisible, landmarksVisible: resolvedShowLandmarks });
+                    }}
                     className="rounded border-slate-300 dark:border-slate-700 text-teal-600 dark:text-cyan-500 focus:ring-0"
                   />
                   <span>Scapula</span>
@@ -1071,8 +1085,11 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
                 <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white">
                   <input
                     type="checkbox"
-                    checked={humerusVisible}
-                    onChange={(e) => setHumerusVisible(e.target.checked)}
+                    checked={resolvedHumerusVisible}
+                    onChange={(e) => {
+                      setHumerusVisible(e.target.checked);
+                      onVisibilityChange?.({ scapulaVisible: resolvedScapulaVisible, humerusVisible: e.target.checked, landmarksVisible: resolvedShowLandmarks });
+                    }}
                     className="rounded border-slate-300 dark:border-slate-700 text-teal-600 dark:text-cyan-500 focus:ring-0"
                   />
                   <span>Humerus</span>
@@ -1081,8 +1098,11 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
                 <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white">
                   <input
                     type="checkbox"
-                    checked={showLandmarks}
-                    onChange={(e) => setShowLandmarks(e.target.checked)}
+                    checked={resolvedShowLandmarks}
+                    onChange={(e) => {
+                      setShowLandmarks(e.target.checked);
+                      onVisibilityChange?.({ scapulaVisible: resolvedScapulaVisible, humerusVisible: resolvedHumerusVisible, landmarksVisible: e.target.checked });
+                    }}
                     className="rounded border-slate-300 dark:border-slate-700 text-teal-600 dark:text-cyan-500 focus:ring-0"
                   />
                   <MapPin className="w-3 h-3 text-teal-600 dark:text-cyan-400" />
