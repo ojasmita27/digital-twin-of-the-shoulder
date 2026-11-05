@@ -242,6 +242,16 @@ export interface SegmentationJob {
   updatedAt?: string;
   processingError?: string | null;
   manualCorrections?: Array<Record<string, unknown>>;
+  isManuallyCorrected?: boolean;
+  separationMethod?: string;
+  separationStatus?: 'verified' | 'manual_review_required';
+  separationConfidence?: number | null;
+  separationNotes?: string | null;
+  overlapVoxelCount?: number;
+  scapulaVoxelCount?: number;
+  humerusVoxelCount?: number;
+  scapulaVolumeMm3?: number;
+  humerusVolumeMm3?: number;
 }
 
 export interface MeshArtifact {

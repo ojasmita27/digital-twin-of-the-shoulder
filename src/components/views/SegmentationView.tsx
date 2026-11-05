@@ -45,6 +45,7 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
   const [editSlice, setEditSlice] = useState(0);
   const [brushRadius, setBrushRadius] = useState(4);
   const [editMode, setEditMode] = useState<'add' | 'remove'>('add');
+  const [editStructure, setEditStructure] = useState<'combined' | 'scapula' | 'humerus'>('combined');
   const [pendingOperations, setPendingOperations] = useState<Array<{ x: number; y: number; radius: number; add: boolean }>>([]);
   const [redoOperations, setRedoOperations] = useState<Array<{ x: number; y: number; radius: number; add: boolean }>>([]);
   const [preview, setPreview] = useState<{ ctPreviewUrl: string; maskPreviewUrl?: string | null } | null>(null);
@@ -106,13 +107,13 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
       setPreview(null);
       return;
     }
-    apiClient.getSegmentationPreview(activeCase.id, 'axial', editSlice).then((response) => {
+    apiClient.getSegmentationPreview(activeCase.id, 'axial', editSlice, undefined, undefined, editStructure).then((response) => {
       if (!cancelled) setPreview(response.data || null);
     });
     return () => {
       cancelled = true;
     };
-  }, [activeCase?.id, activeCase?.segmentationJob?.version, activeCase?.imaging?.sourceFiles, editSlice]);
+  }, [activeCase?.id, activeCase?.segmentationJob?.version, activeCase?.imaging?.sourceFiles, editSlice, editStructure]);
 
   useEffect(() => {
     const canvas = editorRef.current;
@@ -169,7 +170,7 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
 
   const saveCorrections = async () => {
     if (!activeCase || pendingOperations.length === 0) return;
-    const result = await apiClient.correctSegmentation(activeCase.id, editSlice, pendingOperations);
+    const result = await apiClient.correctSegmentation(activeCase.id, editSlice, pendingOperations, editStructure);
     if (result.data) {
       onUpdateJob?.(result.data as unknown as SegmentationJob);
       setPendingOperations([]);
@@ -350,7 +351,34 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
               {activeCase?.segmentationJob && (
                 <div className="border-t border-slate-200 dark:border-slate-800 pt-3 space-y-2 text-[11px]">
                   <div className="flex justify-between"><span>Mask version</span><span>{activeCase.segmentationJob.version || 1}</span></div>
-                  <div className="flex justify-between"><span>Segmented voxels</span><span>{activeCase.segmentationJob.voxelCount ?? 'unknown'}</span></div>
+                  <div className="flex justify-between">
+                    <span>Source</span>
+                    <span className={activeCase.segmentationJob.isManuallyCorrected ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-emerald-600 dark:text-emerald-400 font-semibold'}>
+                      {activeCase.segmentationJob.isManuallyCorrected ? 'Manually Corrected' : 'Automatic'}
+                    </span>
+                  </div>
+                  {activeCase.segmentationJob.separationStatus && (
+                    <div className="flex justify-between">
+                      <span>Separation</span>
+                      <span className={activeCase.segmentationJob.separationStatus === 'manual_review_required' ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-emerald-600 dark:text-emerald-400 font-semibold'}>
+                        {activeCase.segmentationJob.separationStatus === 'manual_review_required' ? 'Manual Review Required' : 'Verified'}
+                        {activeCase.segmentationJob.separationConfidence != null ? ` (${Math.round(activeCase.segmentationJob.separationConfidence * 100)}%)` : ''}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between"><span>Total voxels</span><span>{activeCase.segmentationJob.voxelCount ?? 'unknown'}</span></div>
+                  {activeCase.segmentationJob.scapulaVoxelCount !== undefined && (
+                    <div className="flex justify-between"><span>Scapula voxels</span><span>{activeCase.segmentationJob.scapulaVoxelCount}</span></div>
+                  )}
+                  {activeCase.segmentationJob.humerusVoxelCount !== undefined && (
+                    <div className="flex justify-between"><span>Humerus voxels</span><span>{activeCase.segmentationJob.humerusVoxelCount}</span></div>
+                  )}
+                  {typeof activeCase.segmentationJob.overlapVoxelCount === 'number' && activeCase.segmentationJob.overlapVoxelCount > 0 && (
+                    <div className="flex justify-between text-amber-600 dark:text-amber-400">
+                      <span>Overlap voxels</span>
+                      <span>{activeCase.segmentationJob.overlapVoxelCount}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between"><span>Volume</span><span>{activeCase.segmentationJob.segmentationVolumeMm3 ?? 'unknown'} mm³</span></div>
                   <div className="flex justify-between"><span>Mask status</span><span>{activeCase.segmentationJob.reconstructionStatus === 'outdated' ? 'Mesh outdated' : 'Saved'}</span></div>
                 </div>
@@ -360,7 +388,23 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
             <div className="lg:col-span-2 bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-xs font-mono text-slate-300">AXIAL MASK CORRECTION · 2D SLICE PROTOTYPE</div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
+                  {(['combined', 'scapula', 'humerus'] as const).map((struct) => (
+                    <button
+                      key={struct}
+                      type="button"
+                      onClick={() => {
+                        setEditStructure(struct);
+                        setPendingOperations([]);
+                        setRedoOperations([]);
+                      }}
+                      className={`px-2 py-1 text-[11px] rounded capitalize ${
+                        editStructure === struct ? 'bg-teal-600 text-white font-semibold' : 'bg-slate-800 text-slate-300'
+                      }`}
+                    >
+                      {struct}
+                    </button>
+                  ))}
                   <button type="button" onClick={() => setEditMode('add')} className={`px-2 py-1 text-[11px] rounded ${editMode === 'add' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300'}`}>ADD</button>
                   <button type="button" onClick={() => setEditMode('remove')} className={`px-2 py-1 text-[11px] rounded ${editMode === 'remove' ? 'bg-rose-600 text-white' : 'bg-slate-800 text-slate-300'}`}>REMOVE</button>
                 </div>

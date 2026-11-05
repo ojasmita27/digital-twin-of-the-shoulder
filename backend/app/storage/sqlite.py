@@ -178,6 +178,29 @@ class SqliteCaseStore:
             )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs(created_at DESC)")
 
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS digital_twin_versions (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    version_number INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    user_id TEXT,
+                    user_email TEXT,
+                    segmentation_version INTEGER,
+                    landmark_state_json TEXT NOT NULL DEFAULT '[]',
+                    implant_state_json TEXT NOT NULL DEFAULT '{}',
+                    measurement_state_json TEXT NOT NULL DEFAULT '[]',
+                    model_refs_json TEXT NOT NULL DEFAULT '[]',
+                    change_description TEXT NOT NULL DEFAULT '',
+                    UNIQUE(case_id, version_number)
+                )
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dt_versions_case ON digital_twin_versions(case_id, version_number DESC)"
+            )
+
             conn.commit()
 
         # Seed initial default users if none exist
@@ -871,8 +894,93 @@ class SqliteCaseStore:
         """Remove all cases from the table (primarily for test fixtures)."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            cursor.execute("DELETE FROM digital_twin_versions")
             cursor.execute("DELETE FROM cases")
             conn.commit()
+
+    def create_digital_twin_version(
+        self,
+        case_id: str,
+        user_id: Optional[str],
+        user_email: Optional[str],
+        segmentation_version: Optional[int],
+        landmarks: List[Dict[str, Any]],
+        implant_plan: Dict[str, Any],
+        measurements: List[Dict[str, Any]],
+        model_refs: List[Dict[str, Any]],
+        change_description: str = "",
+    ) -> Dict[str, Any]:
+        version_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COALESCE(MAX(version_number), 0) FROM digital_twin_versions WHERE case_id = ?",
+                (case_id,),
+            )
+            next_ver = int(cursor.fetchone()[0]) + 1
+            cursor.execute(
+                """
+                INSERT INTO digital_twin_versions (
+                    id, case_id, version_number, created_at, user_id, user_email,
+                    segmentation_version, landmark_state_json, implant_state_json,
+                    measurement_state_json, model_refs_json, change_description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    case_id,
+                    next_ver,
+                    now,
+                    user_id,
+                    user_email,
+                    segmentation_version,
+                    json.dumps(landmarks),
+                    json.dumps(implant_plan),
+                    json.dumps(measurements),
+                    json.dumps(model_refs),
+                    change_description or f"Digital twin snapshot v{next_ver}",
+                ),
+            )
+            conn.commit()
+        return self.get_digital_twin_version(case_id, next_ver)  # type: ignore[return-value]
+
+    def list_digital_twin_versions(self, case_id: str) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM digital_twin_versions WHERE case_id = ? ORDER BY version_number DESC",
+                (case_id,),
+            )
+            rows = cursor.fetchall()
+            return [self._row_to_version(r) for r in rows]
+
+    def get_digital_twin_version(self, case_id: str, version_number: int) -> Optional[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM digital_twin_versions WHERE case_id = ? AND version_number = ?",
+                (case_id, version_number),
+            )
+            row = cursor.fetchone()
+            return self._row_to_version(row) if row else None
+
+    @staticmethod
+    def _row_to_version(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": row["id"],
+            "caseId": row["case_id"],
+            "versionNumber": int(row["version_number"]),
+            "createdAt": row["created_at"],
+            "userId": row["user_id"],
+            "userEmail": row["user_email"],
+            "segmentationVersion": row["segmentation_version"],
+            "landmarks": json.loads(row["landmark_state_json"] or "[]"),
+            "implantPlan": json.loads(row["implant_state_json"] or "{}"),
+            "measurements": json.loads(row["measurement_state_json"] or "[]"),
+            "modelRefs": json.loads(row["model_refs_json"] or "[]"),
+            "changeDescription": row["change_description"],
+        }
 
 
 # Default singleton instance bound to settings.DATABASE_PATH

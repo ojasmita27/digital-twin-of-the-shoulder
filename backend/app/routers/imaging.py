@@ -25,6 +25,7 @@ from ..services.dicom_service import (
     load_volume_from_files,
     extract_patient_space_mesh_from_mask,
     render_plane_preview_base64,
+    separate_shoulder_bones,
 )
 from ..config import settings
 
@@ -84,6 +85,8 @@ class DicomUploadResponse(BaseModel):
 class SegmentationCorrection(BaseModel):
     sliceIndex: int
     operations: List[Dict[str, Any]]
+    structure: Optional[str] = None
+
 
 
 def _owned_case_for_modify(case_id: str, authorization: Optional[str]):
@@ -367,19 +370,41 @@ async def segment_case_ct(
                 f"{maxThresholdHu:.1f} HU." if maxThresholdHu is not None
                 else f"Segmentation is empty at threshold {thresholdHu:.1f} HU."
             )
+        structure_masks, separation_method, separation_meta = separate_shoulder_bones(mask, analysis, selected_structures)
         segmentation_id = str(uuid.uuid4())
         mask_path = os.path.join(series_dir, f"{segmentation_id}.npz")
         import numpy as np
-        np.savez_compressed(mask_path, mask=mask.astype(np.uint8), thresholdHu=thresholdHu)
+        save_payload: Dict[str, Any] = {
+            "mask": mask.astype(np.uint8),
+            "auto_mask": mask.astype(np.uint8),
+            "thresholdHu": thresholdHu,
+        }
+        if "scapula" in structure_masks:
+            save_payload["scapula_mask"] = structure_masks["scapula"].astype(np.uint8)
+            save_payload["auto_scapula_mask"] = structure_masks["scapula"].astype(np.uint8)
+        if "humerus" in structure_masks:
+            save_payload["humerus_mask"] = structure_masks["humerus"].astype(np.uint8)
+            save_payload["auto_humerus_mask"] = structure_masks["humerus"].astype(np.uint8)
+        np.savez_compressed(mask_path, **save_payload)
+
         spacing = analysis["spacingMm"]
-        volume_mm3 = float(mask.sum()) * float(spacing[0]) * float(spacing[1]) * float(spacing[2])
+        voxel_vol = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
+        volume_mm3 = float(mask.sum()) * voxel_vol
+        scap_voxels = int(structure_masks["scapula"].sum()) if "scapula" in structure_masks else 0
+        hum_voxels = int(structure_masks["humerus"].sum()) if "humerus" in structure_masks else 0
     except (DicomValidationError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"Segmentation failed: {exc}") from exc
     now = datetime.now(timezone.utc).isoformat()
     job = {
         "jobId": segmentation_id,
         "status": "completed",
-        "method": "threshold",
+        "method": "threshold_separated" if len(structure_masks) >= 2 else "threshold",
+        "separationMethod": separation_method,
+        "separationStatus": separation_meta.get("separationStatus", "verified"),
+        "separationConfidence": separation_meta.get("separationConfidence"),
+        "separationNotes": separation_meta.get("separationNotes"),
+        "overlapVoxelCount": separation_meta.get("overlapVoxelCount", 0),
+        "isManuallyCorrected": False,
         "model": model,
         "structures": selected_structures,
         "thresholdHu": thresholdHu,
@@ -387,7 +412,11 @@ async def segment_case_ct(
         "maskStorageName": os.path.basename(mask_path),
         "version": 1,
         "voxelCount": int(mask.sum()),
+        "scapulaVoxelCount": scap_voxels,
+        "humerusVoxelCount": hum_voxels,
         "segmentationVolumeMm3": round(volume_mm3, 3),
+        "scapulaVolumeMm3": round(scap_voxels * voxel_vol, 3),
+        "humerusVolumeMm3": round(hum_voxels * voxel_vol, 3),
         "inputDimensions": [int(value) for value in volume.shape],
         "voxelSpacingMm": [float(value) for value in spacing],
         "createdAt": now,
@@ -396,7 +425,7 @@ async def segment_case_ct(
         "reconstructionStatus": "outdated",
         "manualCorrections": [],
         "processingError": None,
-        "limitations": "Prototype threshold segmentation; requires user inspection and correction before clinical use.",
+        "limitations": "Prototype threshold and watershed/connected-component segmentation; requires user inspection and correction before clinical use.",
     }
     case_store.update_case(case_id, {"segmentationJob": job, "status": "segmentation_completed"})
     return job
@@ -423,6 +452,7 @@ async def get_segmentation_preview(
     sliceIndex: int = 0,
     windowCenter: Optional[float] = None,
     windowWidth: Optional[float] = None,
+    structure: Optional[str] = None,
     authorization: Optional[str] = Header(None),
 ):
     user = get_current_user(authorization)
@@ -432,10 +462,17 @@ async def get_segmentation_preview(
     if not case_store.user_can_access_case(user, case):
         raise HTTPException(status_code=403, detail=f"Access denied for research case '{case_id}'.")
     try:
+        import numpy as np
         volume, analysis = load_volume_from_files(_series_paths(case_id, case))
         mask = None
         if case.segmentationJob:
-            mask, _ = _load_saved_mask(case_id, case)
+            combined_mask, mask_path = _load_saved_mask(case_id, case)
+            if structure in ("scapula", "humerus"):
+                with np.load(mask_path) as archive:
+                    key = f"{structure}_mask"
+                    mask = archive[key].astype(bool) if key in archive else combined_mask
+            else:
+                mask = combined_mask
         dimensions = {
             "axial": volume.shape[0],
             "coronal": volume.shape[1],
@@ -474,7 +511,25 @@ async def correct_case_segmentation(
     try:
         import numpy as np
         mask, mask_path = _load_saved_mask(case_id, case)
-        if correction.sliceIndex < 0 or correction.sliceIndex >= mask.shape[0]:
+        scapula_mask = None
+        humerus_mask = None
+        preserved_auto: Dict[str, Any] = {}
+        with np.load(mask_path) as archive:
+            if "scapula_mask" in archive:
+                scapula_mask = archive["scapula_mask"].astype(bool)
+            if "humerus_mask" in archive:
+                humerus_mask = archive["humerus_mask"].astype(bool)
+            for auto_key in ("auto_mask", "auto_scapula_mask", "auto_humerus_mask"):
+                if auto_key in archive:
+                    preserved_auto[auto_key] = archive[auto_key]
+
+        target_mask = mask
+        if correction.structure == "scapula" and scapula_mask is not None:
+            target_mask = scapula_mask
+        elif correction.structure == "humerus" and humerus_mask is not None:
+            target_mask = humerus_mask
+
+        if correction.sliceIndex < 0 or correction.sliceIndex >= target_mask.shape[0]:
             raise DicomValidationError("Correction slice is outside the stored axial volume.")
         for operation in correction.operations:
             x = int(operation.get("x", -1))
@@ -483,19 +538,50 @@ async def correct_case_segmentation(
             value = 1 if bool(operation.get("add", True)) else 0
             if radius < 1 or radius > 128:
                 raise DicomValidationError("Brush radius must be between 1 and 128 voxels.")
-            if x < 0 or y < 0 or x >= mask.shape[2] or y >= mask.shape[1]:
+            if x < 0 or y < 0 or x >= target_mask.shape[2] or y >= target_mask.shape[1]:
                 raise DicomValidationError("Correction coordinate is outside the stored slice.")
-            yy, xx = np.ogrid[:mask.shape[1], :mask.shape[2]]
+            yy, xx = np.ogrid[:target_mask.shape[1], :target_mask.shape[2]]
             brush = (xx - x) ** 2 + (yy - y) ** 2 <= radius ** 2
-            mask[correction.sliceIndex, brush] = value
-        np.savez_compressed(mask_path, mask=mask.astype(np.uint8))
+            target_mask[correction.sliceIndex, brush] = bool(value)
+
+        if correction.structure == "scapula" and scapula_mask is not None:
+            scapula_mask = target_mask
+            mask = scapula_mask | (humerus_mask if humerus_mask is not None else False)
+        elif correction.structure == "humerus" and humerus_mask is not None:
+            humerus_mask = target_mask
+            mask = humerus_mask | (scapula_mask if scapula_mask is not None else False)
+        else:
+            mask = target_mask
+            if scapula_mask is not None:
+                scapula_mask &= mask
+            if humerus_mask is not None:
+                humerus_mask &= mask
+
+        save_payload: Dict[str, Any] = {"mask": mask.astype(np.uint8), **preserved_auto}
+        if scapula_mask is not None:
+            save_payload["scapula_mask"] = scapula_mask.astype(np.uint8)
+        if humerus_mask is not None:
+            save_payload["humerus_mask"] = humerus_mask.astype(np.uint8)
+        np.savez_compressed(mask_path, **save_payload)
+
         job = dict(case.segmentationJob or {})
         spacing = job.get("voxelSpacingMm", (case.imaging or {}).get("pixelSpacingMm", [1, 1]) + [(case.imaging or {}).get("sliceSpacingMm", 1)])
+        voxel_vol = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
+        scap_voxels = int(scapula_mask.sum()) if scapula_mask is not None else int(job.get("scapulaVoxelCount", 0))
+        hum_voxels = int(humerus_mask.sum()) if humerus_mask is not None else int(job.get("humerusVoxelCount", 0))
+        overlap_voxels = int((scapula_mask & humerus_mask).sum()) if (scapula_mask is not None and humerus_mask is not None) else 0
+        job["overlapVoxelCount"] = overlap_voxels
         job.update({
             "version": int(job.get("version", 1)) + 1,
+            "method": "manual_corrected",
+            "isManuallyCorrected": True,
             "updatedAt": datetime.now(timezone.utc).isoformat(),
             "voxelCount": int(mask.sum()),
-            "segmentationVolumeMm3": round(float(mask.sum()) * float(spacing[0]) * float(spacing[1]) * float(spacing[2]), 3),
+            "scapulaVoxelCount": scap_voxels,
+            "humerusVoxelCount": hum_voxels,
+            "segmentationVolumeMm3": round(float(mask.sum()) * voxel_vol, 3),
+            "scapulaVolumeMm3": round(scap_voxels * voxel_vol, 3),
+            "humerusVolumeMm3": round(hum_voxels * voxel_vol, 3),
             "manualCorrections": [*(job.get("manualCorrections") or []), correction.model_dump()],
             "reconstructionStatus": "outdated",
         })
@@ -512,7 +598,7 @@ async def reconstruct_case_ct(
     thresholdHu: float = 300.0,
     authorization: Optional[str] = Header(None),
 ):
-    """Extract and persist a patient-specific STL from the saved segmentation mask."""
+    """Extract and persist patient-specific STL meshes (Scapula & Humerus when separated) from the saved segmentation mask."""
     user, case = _owned_case_for_modify(case_id, authorization)
     paths = _series_paths(case_id, case)
     if len(paths) < 2:
@@ -520,47 +606,71 @@ async def reconstruct_case_ct(
     if not case.segmentationJob:
         raise HTTPException(status_code=400, detail="Run and save segmentation before reconstruction.")
     try:
-        mask, _ = _load_saved_mask(case_id, case)
+        import numpy as np
+        mask, mask_path = _load_saved_mask(case_id, case)
+        if not bool(mask.any()):
+            raise DicomValidationError("Cannot reconstruct 3D mesh from an empty segmentation mask.")
         _, analysis = load_volume_from_files(paths)
-        mesh_bytes, stats = extract_patient_space_mesh_from_mask(
-            mask,
-            analysis,
-            (case.segmentationJob or {}).get("thresholdHu"),
-        )
+        seg_job = case.segmentationJob or {}
+        seg_version = int(seg_job.get("version", 1))
+        seg_threshold = seg_job.get("thresholdHu", thresholdHu)
+
+        structure_targets: List[Tuple[str, Any]] = []
+        with np.load(mask_path) as archive:
+            if "scapula_mask" in archive and bool(archive["scapula_mask"].any()):
+                structure_targets.append(("scapula", archive["scapula_mask"].astype(bool)))
+            if "humerus_mask" in archive and bool(archive["humerus_mask"].any()):
+                structure_targets.append(("humerus", archive["humerus_mask"].astype(bool)))
+
+        if not structure_targets:
+            structure_targets.append(("combined", mask))
+
+        model_dir = os.path.join(settings.DATA_DIR, "models", case_id)
+        os.makedirs(model_dir, exist_ok=True)
+        generated_meshes: List[Dict[str, Any]] = []
+
+        for struct_name, struct_mask in structure_targets:
+            mesh_bytes, stats = extract_patient_space_mesh_from_mask(
+                struct_mask,
+                analysis,
+                seg_threshold,
+            )
+            model_id = str(uuid.uuid4())
+            stored_name = f"{model_id}.stl"
+            with open(os.path.join(model_dir, stored_name), "wb") as model_file:
+                model_file.write(mesh_bytes)
+            model = {
+                "id": model_id,
+                "version": seg_version,
+                "segmentationVersion": seg_version,
+                "caseId": case_id,
+                "filename": f"ct-{struct_name}-{model_id[:8]}.stl",
+                "format": "stl",
+                "structure": struct_name,
+                "fileSizeBytes": len(mesh_bytes),
+                "sha256": hashlib.sha256(mesh_bytes).hexdigest(),
+                "uploadedAt": datetime.now(timezone.utc).isoformat(),
+                "storageName": stored_name,
+                "unit": "mm",
+                "unitVerified": True,
+                "provenance": f"Patient CT {struct_name} segmentation (v{seg_version}) and marching-cubes surface extraction",
+                "isDemoMesh": False,
+                "qualityChecks": {
+                    "watertightCheck": "not_computed",
+                    "physicalCoordinates": True,
+                    "thresholdHu": seg_threshold,
+                    "segmentationVersion": seg_version,
+                    "limitations": "Research prototype; inspect segmentation and mesh before use.",
+                },
+                **stats,
+            }
+            generated_meshes.append(model)
     except (DicomValidationError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"Reconstruction failed: {exc}") from exc
 
-    model_id = str(uuid.uuid4())
-    stored_name = f"{model_id}.stl"
-    model_dir = os.path.join(settings.DATA_DIR, "models", case_id)
-    os.makedirs(model_dir, exist_ok=True)
-    with open(os.path.join(model_dir, stored_name), "wb") as model_file:
-        model_file.write(mesh_bytes)
-    model = {
-        "id": model_id,
-        "version": 1,
-        "caseId": case_id,
-        "filename": f"ct-reconstruction-{model_id[:8]}.stl",
-        "format": "stl",
-        "structure": "combined",
-        "fileSizeBytes": len(mesh_bytes),
-        "sha256": hashlib.sha256(mesh_bytes).hexdigest(),
-        "uploadedAt": datetime.now(timezone.utc).isoformat(),
-        "storageName": stored_name,
-        "unit": "mm",
-        "unitVerified": True,
-        "provenance": "Patient CT threshold segmentation and marching-cubes surface extraction",
-        "isDemoMesh": False,
-        "qualityChecks": {
-            "watertightCheck": "not_computed",
-            "physicalCoordinates": True,
-            "thresholdHu": thresholdHu,
-            "limitations": "Research prototype; inspect segmentation and mesh before use.",
-        },
-        **stats,
-    }
+    primary_mesh = generated_meshes[0]
     case_store.update_case(case_id, {
-        "meshes": [*case.meshes, model],
+        "meshes": [*case.meshes, *generated_meshes],
         "status": "models_generated",
         "segmentationJob": {
             **(case.segmentationJob or {}),
@@ -568,11 +678,12 @@ async def reconstruct_case_ct(
             "thresholdHu": thresholdHu,
             "reconstructionStatus": "completed",
             "reconstructionAt": datetime.now(timezone.utc).isoformat(),
-            "meshId": model_id,
-            "qualityAssessment": model["qualityChecks"],
+            "meshId": primary_mesh["id"],
+            "meshIds": [m["id"] for m in generated_meshes],
+            "qualityAssessment": primary_mesh["qualityChecks"],
         },
     })
-    return {"status": "completed", "mesh": model}
+    return {"status": "completed", "mesh": primary_mesh, "meshes": generated_meshes}
 
 
 @router.post("/imaging/upload", response_model=DicomUploadResponse)
@@ -611,3 +722,248 @@ def get_case_imaging(
         )
 
     return case.imaging or {}
+
+
+@router.get("/cases/{case_id}/imaging/bone-quality")
+async def get_case_bone_quality(
+    case_id: str,
+    lowHu: float = 150.0,
+    midHu: float = 300.0,
+    highHu: float = 700.0,
+    authorization: Optional[str] = Header(None),
+):
+    """Compute regional CT attenuation (HU) statistics for scapula and humerus masks."""
+    user = get_current_user(authorization)
+    case = case_store.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
+    if not case_store.user_can_access_case(user, case):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    if not case.segmentationJob:
+        raise HTTPException(status_code=400, detail="Run and save segmentation before analyzing bone quality.")
+    paths = _series_paths(case_id, case)
+    try:
+        import numpy as np
+        from ..services.dicom_service import compute_bone_quality_metrics
+        mask, mask_path = _load_saved_mask(case_id, case)
+        volume, analysis = load_volume_from_files(paths)
+        scapula_mask = None
+        humerus_mask = None
+        with np.load(mask_path) as archive:
+            if "scapula_mask" in archive:
+                scapula_mask = archive["scapula_mask"].astype(bool)
+            if "humerus_mask" in archive:
+                humerus_mask = archive["humerus_mask"].astype(bool)
+        if scapula_mask is None and humerus_mask is None:
+            scapula_mask = mask
+        metrics = compute_bone_quality_metrics(
+            volume,
+            analysis,
+            scapula_mask=scapula_mask,
+            humerus_mask=humerus_mask,
+            low_hu=lowHu,
+            mid_hu=midHu,
+            high_hu=highHu,
+        )
+        case_store.update_case(case_id, {"boneQualityMetrics": metrics})
+        return metrics
+    except (DicomValidationError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Bone quality analysis failed: {exc}") from exc
+
+
+@router.post("/cases/{case_id}/landmarks/detect")
+async def detect_case_landmarks(
+    case_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """Detect anatomical shoulder landmarks from patient-specific 3D segmentation masks."""
+    user, case = _owned_case_for_modify(case_id, authorization)
+    if not case.segmentationJob:
+        raise HTTPException(status_code=400, detail="Run and save segmentation before detecting landmarks.")
+    paths = _series_paths(case_id, case)
+    try:
+        import numpy as np
+        from ..services.dicom_service import detect_shoulder_landmarks
+        mask, mask_path = _load_saved_mask(case_id, case)
+        _, analysis = load_volume_from_files(paths)
+        scapula_mask = None
+        humerus_mask = None
+        with np.load(mask_path) as archive:
+            if "scapula_mask" in archive:
+                scapula_mask = archive["scapula_mask"].astype(bool)
+            if "humerus_mask" in archive:
+                humerus_mask = archive["humerus_mask"].astype(bool)
+        if scapula_mask is None and humerus_mask is None:
+            scapula_mask = mask
+
+        detection = detect_shoulder_landmarks(scapula_mask, humerus_mask, analysis)
+        patient_meshes = [m for m in (case.meshes or []) if not m.get("isDemoMesh")]
+        latest_mesh = patient_meshes[-1] if patient_meshes else None
+        model_id = latest_mesh["id"] if latest_mesh else "ct-segmentation"
+        model_version = int(latest_mesh.get("version", 1)) if latest_mesh else int(case.segmentationJob.get("version", 1))
+
+        existing_manual = [
+            lm for lm in (case.landmarks or [])
+            if lm.get("source") != "ai_assisted"
+        ]
+        now = datetime.now(timezone.utc).isoformat()
+        new_landmarks = []
+        for item in detection["landmarks"]:
+            new_landmarks.append({
+                "id": str(uuid.uuid4()),
+                "name": item["name"],
+                "coordinatesMm": item["coordinatesMm"],
+                "structure": item["structure"],
+                "source": "ai_assisted",
+                "status": item["status"],
+                "confidence": item["confidence"],
+                "modelId": model_id,
+                "modelVersion": model_version,
+                "createdAt": now,
+            })
+
+        combined_landmarks = existing_manual + new_landmarks
+        case_store.update_case(case_id, {"landmarks": combined_landmarks})
+        return {
+            **detection,
+            "landmarks": combined_landmarks,
+            "detectedCount": len(new_landmarks),
+        }
+    except (DicomValidationError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Landmark detection failed: {exc}") from exc
+
+
+class VersionSnapshotRequest(BaseModel):
+    changeDescription: str = ""
+
+
+@router.get("/cases/{case_id}/versions")
+def list_case_versions(
+    case_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """List immutable digital twin version snapshots for a case."""
+    user = get_current_user(authorization)
+    case = case_store.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
+    if not case_store.user_can_access_case(user, case):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    return {"versions": case_store.list_digital_twin_versions(case_id)}
+
+
+@router.post("/cases/{case_id}/versions", status_code=201)
+def create_case_version(
+    case_id: str,
+    payload: VersionSnapshotRequest,
+    authorization: Optional[str] = Header(None),
+):
+    """Create an immutable digital twin version snapshot of the current case state."""
+    user, case = _owned_case_for_modify(case_id, authorization)
+    seg_ver = int((case.segmentationJob or {}).get("version", 0)) if case.segmentationJob else None
+    model_refs = [
+        {"id": m.get("id"), "structure": m.get("structure"), "version": m.get("version"), "filename": m.get("filename")}
+        for m in (case.meshes or [])
+        if not m.get("isDemoMesh")
+    ]
+    version = case_store.create_digital_twin_version(
+        case_id=case_id,
+        user_id=user.get("id"),
+        user_email=user.get("email"),
+        segmentation_version=seg_ver,
+        landmarks=case.landmarks or [],
+        implant_plan=case.implantPlan or {},
+        measurements=case.measurements or [],
+        model_refs=model_refs,
+        change_description=payload.changeDescription,
+    )
+    return version
+
+
+@router.get("/cases/{case_id}/versions/compare")
+def compare_case_versions(
+    case_id: str,
+    v1: int,
+    v2: int,
+    authorization: Optional[str] = Header(None),
+):
+    """Compare two immutable digital twin versions for a case."""
+    user = get_current_user(authorization)
+    case = case_store.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
+    if not case_store.user_can_access_case(user, case):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    ver1 = case_store.get_digital_twin_version(case_id, v1)
+    ver2 = case_store.get_digital_twin_version(case_id, v2)
+    if not ver1 or not ver2:
+        raise HTTPException(status_code=404, detail="One or both requested versions were not found.")
+
+    pos1 = (ver1.get("implantPlan") or {}).get("positionMm") or [0.0, 0.0, 0.0]
+    pos2 = (ver2.get("implantPlan") or {}).get("positionMm") or [0.0, 0.0, 0.0]
+    implant_delta = [round(float(pos2[i]) - float(pos1[i]), 3) for i in range(min(len(pos1), len(pos2)))]
+
+    return {
+        "v1": ver1["versionNumber"],
+        "v2": ver2["versionNumber"],
+        "segmentationVersionChanged": ver1.get("segmentationVersion") != ver2.get("segmentationVersion"),
+        "landmarkCountDelta": len(ver2.get("landmarks") or []) - len(ver1.get("landmarks") or []),
+        "measurementCountDelta": len(ver2.get("measurements") or []) - len(ver1.get("measurements") or []),
+        "implantPositionDeltaMm": implant_delta,
+        "implantNameV1": (ver1.get("implantPlan") or {}).get("implantName"),
+        "implantNameV2": (ver2.get("implantPlan") or {}).get("implantName"),
+    }
+
+
+@router.post("/cases/{case_id}/versions/{version_number}/restore")
+def restore_case_version(
+    case_id: str,
+    version_number: int,
+    authorization: Optional[str] = Header(None),
+):
+    """Restore case landmarks, implant plan, and measurements from an immutable version snapshot."""
+    user, case = _owned_case_for_modify(case_id, authorization)
+    target = case_store.get_digital_twin_version(case_id, version_number)
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Version {version_number} not found for case '{case_id}'.")
+
+    updated = case_store.update_case(
+        case_id,
+        {
+            "landmarks": target.get("landmarks") or [],
+            "implantPlan": target.get("implantPlan") or {},
+            "measurements": target.get("measurements") or [],
+        },
+    )
+    return {
+        "status": "restored",
+        "restoredVersion": version_number,
+        "case": updated.model_dump() if hasattr(updated, "model_dump") else updated,
+    }
+
+
+@router.get("/cases/{case_id}/report/pdf")
+def download_case_pdf_report(
+    case_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """Generate and download a patient-specific digital twin PDF engineering report."""
+    from fastapi.responses import Response
+    from ..services.pdf_service import generate_case_pdf_bytes
+
+    user = get_current_user(authorization)
+    case = case_store.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail=f"Research case '{case_id}' was not found in storage.")
+    if not case_store.user_can_access_case(user, case):
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    case_dict = case.model_dump() if hasattr(case, "model_dump") else dict(case)
+    pdf_bytes = generate_case_pdf_bytes(case_dict, user_role=user.get("role", "researcher"))
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="ShoulderTwin-{case_id}.pdf"'},
+    )
+
+

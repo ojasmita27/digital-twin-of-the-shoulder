@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { ResearchCase, MorphometricMeasurements } from '../../types/case';
+import React, { useEffect, useState } from 'react';
+import { ResearchCase, SavedMeasurement } from '../../types/case';
 import { MetricCard } from '../common/MetricCard';
+import { apiClient } from '../../services/apiClient';
 import {
   Ruler,
   Info,
@@ -23,8 +24,50 @@ interface MeasurementsViewProps {
 
 export const MeasurementsView: React.FC<MeasurementsViewProps> = ({ activeCase }) => {
   const [methodologyOpen, setMethodologyOpen] = useState(false);
+  const [savedMeasurements, setSavedMeasurements] = useState<SavedMeasurement[]>(
+    activeCase?.measurements?.manualMeasurements || []
+  );
+  const [loadingMeasurements, setLoadingMeasurements] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeCase || activeCase.isDemo) {
+      setSavedMeasurements(activeCase?.measurements?.manualMeasurements || []);
+      return;
+    }
+    setLoadingMeasurements(true);
+    apiClient.listMeasurements(activeCase.id).then((res) => {
+      if (!cancelled) {
+        if (res.data) {
+          setSavedMeasurements(res.data);
+        } else {
+          setSavedMeasurements(activeCase.measurements?.manualMeasurements || []);
+        }
+        setLoadingMeasurements(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCase?.id, activeCase?.isDemo, activeCase?.measurements?.manualMeasurements]);
+
   const measurements = activeCase?.measurements;
   const isDemo = activeCase?.isDemo || !measurements;
+
+  const resolveLandmarkNames = (m: SavedMeasurement): string => {
+    if (!m.pointRefs || m.pointRefs.length === 0) {
+      return 'Direct 3D Coordinates';
+    }
+    const landmarks = activeCase?.landmarks || [];
+    const names = m.pointRefs.map((ref) => {
+      if (ref.kind === 'landmark') {
+        const found = landmarks.find((l) => l.id === ref.id);
+        return found ? found.name : ref.id;
+      }
+      return `Implant Ref (${ref.id})`;
+    });
+    return names.join(' → ');
+  };
 
   return (
     <div className="space-y-6 pb-12 max-w-7xl mx-auto">
@@ -55,11 +98,90 @@ export const MeasurementsView: React.FC<MeasurementsViewProps> = ({ activeCase }
           ) : (
             <span className="text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 font-medium">
               <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-              <span>ISB Coordinate Standardized</span>
+              <span>Patient-Specific Geometric Analysis</span>
             </span>
           )}
         </div>
       </div>
+
+      {/* Patient-Specific Landmark & Spatial Measurements */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden shadow-xs">
+        <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Ruler className="w-4 h-4 text-teal-600 dark:text-cyan-400" />
+            <h2 className="text-xs font-mono uppercase tracking-wider text-slate-700 dark:text-slate-200 font-semibold">
+              Patient-Specific Spatial Measurements
+            </h2>
+          </div>
+          <span className="text-[11px] font-mono text-slate-400">
+            {loadingMeasurements ? 'Syncing...' : `${savedMeasurements.length} recorded`}
+          </span>
+        </div>
+
+        {savedMeasurements.length === 0 ? (
+          <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400">
+            No patient-specific landmark measurements recorded for this case yet. Place anatomical landmarks on the reconstructed 3D bone surface in <span className="font-semibold text-slate-700 dark:text-slate-200">3D Reconstruction</span> to compute point-to-point distances and 3-point angles.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 text-[11px] font-mono uppercase text-slate-500 dark:text-slate-400">
+                  <th className="px-4 py-2.5">Measurement Name</th>
+                  <th className="px-4 py-2.5">Value</th>
+                  <th className="px-4 py-2.5">Unit</th>
+                  <th className="px-4 py-2.5">Referenced Landmarks</th>
+                  <th className="px-4 py-2.5">Model Version</th>
+                  <th className="px-4 py-2.5">Validity Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
+                {savedMeasurements.map((m) => {
+                  const isAngle = m.type === 'angle';
+                  const valStr = isAngle
+                    ? (m.angleDegrees ?? 0).toFixed(2)
+                    : (m.displayDistance ?? m.rawDistance).toFixed(2);
+                  const unitStr = isAngle ? 'deg' : m.displayUnit;
+                  return (
+                    <tr key={m.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30">
+                      <td className="px-4 py-3 font-sans font-medium text-slate-900 dark:text-slate-100">
+                        {m.label || (isAngle ? '3-Point Angle' : 'Point-to-Point Distance')}
+                      </td>
+                      <td className="px-4 py-3 text-teal-700 dark:text-cyan-400 font-bold">
+                        {valStr}
+                      </td>
+                      <td className="px-4 py-3 text-slate-500">{unitStr}</td>
+                      <td className="px-4 py-3 font-sans text-slate-600 dark:text-slate-300">
+                        {resolveLandmarkNames(m)}
+                      </td>
+                      <td className="px-4 py-3 text-slate-500">v{m.modelVersion}</td>
+                      <td className="px-4 py-3">
+                        {m.stale ? (
+                          <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            Stale (Model Updated)
+                          </span>
+                        ) : m.scaleVerified ? (
+                          <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Geometric (Scale Verified)
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-slate-500">
+                            <Info className="w-3.5 h-3.5" />
+                            Geometric (Unverified Scale)
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
 
       {/* Glenoid Vault & Morphology Grid */}
       <div>

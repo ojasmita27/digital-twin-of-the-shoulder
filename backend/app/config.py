@@ -32,6 +32,9 @@ class Settings:
             "http://127.0.0.1:3000",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
+            "https://ais-dev-fauvztlzivpnv7qjwzvje2-196295510280.asia-northeast1.run.app",
+            "https://ais-pre-fauvztlzivpnv7qjwzvje2-196295510280.asia-northeast1.run.app",
+            "https://digital-twin-of-the-shoulder.onrender.com",
         ]
         if raw_env_origins:
             for o in raw_env_origins.split(","):

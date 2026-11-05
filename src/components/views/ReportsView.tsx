@@ -3,12 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { ResearchCase } from '../../types/case';
+import { apiClient } from '../../services/apiClient';
 import {
   FileText,
   Printer,
   Download,
+  History,
   ShieldAlert,
   CheckCircle2,
   AlertTriangle,
@@ -23,6 +25,24 @@ interface ReportsViewProps {
 }
 
 export const ReportsView: React.FC<ReportsViewProps> = ({ activeCase }) => {
+  const [pdfDownloading, setPdfDownloading] = useState(false);
+  const [versions, setVersions] = useState<Array<Record<string, any>>>([]);
+  const [versionDesc, setVersionDesc] = useState('');
+  const [versionStatus, setVersionStatus] = useState<string | null>(null);
+  const [compareV1, setCompareV1] = useState<number | ''>('');
+  const [compareV2, setCompareV2] = useState<number | ''>('');
+  const [compareResult, setCompareResult] = useState<Record<string, any> | null>(null);
+  const [confirmRestoreVer, setConfirmRestoreVer] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!activeCase?.id) {
+      setVersions([]);
+      return;
+    }
+    apiClient.listVersions(activeCase.id).then((res) => {
+      if (res.data?.versions) setVersions(res.data.versions);
+    });
+  }, [activeCase?.id]);
   const report = activeCase?.reports?.[0];
   const measurements = activeCase?.measurements;
   const imaging = activeCase?.imaging;
@@ -61,6 +81,31 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ activeCase }) => {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={pdfDownloading || !activeCase}
+            onClick={async () => {
+              if (!activeCase?.id) return;
+              setPdfDownloading(true);
+              const res = await apiClient.downloadPdfReport(activeCase.id);
+              setPdfDownloading(false);
+              if (res.data) {
+                const blob = new Blob([res.data], { type: 'application/pdf' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `ShoulderTwin-${activeCase.id}.pdf`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } else if (res.error) {
+                setVersionStatus(res.error);
+              }
+            }}
+            className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition-colors shadow-sm disabled:opacity-50"
+          >
+            <Download className="w-4 h-4" />
+            <span>{pdfDownloading ? 'Generating PDF...' : 'Download PDF Report'}</span>
+          </button>
           <button
             onClick={handlePrint}
             className="flex items-center gap-2 px-4 py-2.5 text-xs font-semibold bg-teal-600 hover:bg-teal-500 text-white dark:bg-cyan-400 dark:hover:bg-cyan-300 dark:text-slate-950 rounded-lg transition-colors shadow-sm"
@@ -255,6 +300,149 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ activeCase }) => {
           </div>
         </div>
       </div>
+
+      {/* Digital Twin Version History (Immutable Snapshots) */}
+      {activeCase && (
+        <div className="print:hidden bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-6 space-y-4 text-xs shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+            <div className="flex items-center gap-2">
+              <History className="w-4 h-4 text-teal-600 dark:text-cyan-400" />
+              <h3 className="font-bold text-slate-900 dark:text-slate-100 uppercase tracking-wider">
+                Digital Twin Version History
+              </h3>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="Snapshot description..."
+                value={versionDesc}
+                onChange={(e) => setVersionDesc(e.target.value)}
+                className="px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await apiClient.createVersion(activeCase.id, versionDesc.trim());
+                  if (res.data) {
+                    setVersionDesc('');
+                    setVersionStatus(`Saved immutable snapshot v${res.data.versionNumber}.`);
+                    const listRes = await apiClient.listVersions(activeCase.id);
+                    if (listRes.data?.versions) setVersions(listRes.data.versions);
+                  } else if (res.error) {
+                    setVersionStatus(res.error);
+                  }
+                }}
+                className="px-3 py-1.5 rounded bg-teal-600 hover:bg-teal-700 text-white font-semibold"
+              >
+                Save Version Snapshot
+              </button>
+            </div>
+          </div>
+
+          {versionStatus && (
+            <div className="text-xs text-teal-700 dark:text-cyan-300 bg-teal-50 dark:bg-cyan-950/30 px-3 py-2 rounded">
+              {versionStatus}
+            </div>
+          )}
+
+          {versions.length >= 2 && (
+            <div className="flex flex-wrap items-center gap-2 bg-slate-50 dark:bg-slate-800/50 p-3 rounded">
+              <span className="font-semibold">Compare Versions:</span>
+              <select
+                value={compareV1}
+                onChange={(e) => setCompareV1(e.target.value ? Number(e.target.value) : '')}
+                className="rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1"
+              >
+                <option value="">Select v1</option>
+                {versions.map((v) => (
+                  <option key={v.versionNumber} value={v.versionNumber}>v{v.versionNumber}</option>
+                ))}
+              </select>
+              <span>vs</span>
+              <select
+                value={compareV2}
+                onChange={(e) => setCompareV2(e.target.value ? Number(e.target.value) : '')}
+                className="rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1"
+              >
+                <option value="">Select v2</option>
+                {versions.map((v) => (
+                  <option key={v.versionNumber} value={v.versionNumber}>v{v.versionNumber}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!compareV1 || !compareV2}
+                onClick={async () => {
+                  if (!compareV1 || !compareV2) return;
+                  const res = await apiClient.compareVersions(activeCase.id, Number(compareV1), Number(compareV2));
+                  if (res.data) setCompareResult(res.data);
+                }}
+                className="px-2.5 py-1 rounded bg-slate-800 text-white font-medium disabled:opacity-40"
+              >
+                Compare
+              </button>
+              {compareResult && (
+                <div className="w-full text-[11px] pt-1 text-slate-600 dark:text-slate-300">
+                  v{compareResult.v1} → v{compareResult.v2}: Landmarks Δ {compareResult.landmarkCountDelta}, Measurements Δ {compareResult.measurementCountDelta}, Implant Pos Δ {JSON.stringify(compareResult.implantPositionDeltaMm)} mm
+                </div>
+              )}
+            </div>
+          )}
+
+          {versions.length === 0 ? (
+            <p className="text-slate-500">No immutable digital twin snapshots saved yet.</p>
+          ) : (
+            <div className="divide-y divide-slate-200 dark:divide-slate-800">
+              {versions.map((v) => (
+                <div key={v.id} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="font-mono font-bold text-teal-700 dark:text-cyan-400">v{v.versionNumber}</span>{' '}
+                    <span className="font-medium">{v.changeDescription}</span>
+                    <div className="text-[11px] text-slate-500">
+                      {new Date(v.createdAt).toLocaleString()} · {v.userEmail || 'Unknown user'} · Landmarks: {(v.landmarks || []).length} · Measurements: {(v.measurements || []).length}
+                    </div>
+                  </div>
+                  <div>
+                    {confirmRestoreVer === v.versionNumber ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-amber-600 font-semibold">Confirm restore?</span>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const res = await apiClient.restoreVersion(activeCase.id, v.versionNumber);
+                            setConfirmRestoreVer(null);
+                            if (res.data) {
+                              setVersionStatus(`Restored state from v${v.versionNumber}. Reload case to view restored state.`);
+                            }
+                          }}
+                          className="px-2 py-1 rounded bg-amber-600 text-white font-semibold"
+                        >
+                          Yes, Restore
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRestoreVer(null)}
+                          className="px-2 py-1 rounded bg-slate-200 dark:bg-slate-800"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmRestoreVer(v.versionNumber)}
+                        className="px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+                      >
+                        Restore
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

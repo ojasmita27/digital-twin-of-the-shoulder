@@ -615,3 +615,380 @@ def render_plane_preview_base64(
         mask_canvas.save(mask_buffer, format="PNG")
         result["maskPreviewUrl"] = "data:image/png;base64," + base64.b64encode(mask_buffer.getvalue()).decode("ascii")
     return result
+
+
+def separate_shoulder_bones(
+    mask: Any,
+    analysis: Dict[str, Any],
+    structures: List[str],
+) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
+    """
+    Separate a binary bone mask into independent Scapula and Humerus masks
+    using 3D connected-component analysis and marker-controlled watershed
+    in DICOM patient LPS coordinates, with geometric & orientation validation.
+
+    Returns (structure_masks_dict, separation_method, separation_meta).
+    """
+    if not IMAGING_AVAILABLE:
+        raise DicomValidationError("numpy is required for anatomical bone separation.")
+
+    want_scapula = "scapula" in structures
+    want_humerus = "humerus" in structures
+
+    if want_scapula and not want_humerus:
+        return (
+            {"scapula": mask.astype(bool)},
+            "single_structure_scapula",
+            {"separationStatus": "verified", "separationConfidence": None, "overlapVoxelCount": 0},
+        )
+    if want_humerus and not want_scapula:
+        return (
+            {"humerus": mask.astype(bool)},
+            "single_structure_humerus",
+            {"separationStatus": "verified", "separationConfidence": None, "overlapVoxelCount": 0},
+        )
+    if not want_scapula and not want_humerus:
+        return (
+            {},
+            "none",
+            {"separationStatus": "manual_review_required", "separationConfidence": 0.0, "overlapVoxelCount": 0},
+        )
+
+    try:
+        from scipy import ndimage as ndi
+        from skimage.segmentation import watershed
+    except ImportError as exc:
+        raise DicomValidationError(
+            "scipy and scikit-image are required for scapula/humerus separation."
+        ) from exc
+
+    spacing = [float(s) for s in analysis.get("spacingMm", [1.0, 1.0, 1.0])]
+    orientation = np.asarray(analysis.get("orientation", [1, 0, 0, 0, 1, 0]), dtype=np.float64)
+    row_dir = orientation[:3]
+    col_dir = orientation[3:]
+    norm_dir = np.cross(row_dir, col_dir)
+    origin = np.asarray(analysis.get("originMm", [0.0, 0.0, 0.0]), dtype=np.float64)
+    transform = np.column_stack((norm_dir, row_dir, col_dir))
+
+    def _voxel_to_lps(zyx: np.ndarray) -> np.ndarray:
+        scaled = zyx * np.asarray(spacing, dtype=np.float64)
+        return origin + scaled @ transform.T
+
+    labeled, num_features = ndi.label(mask)
+    if num_features == 0:
+        raise DicomValidationError("Cannot separate empty bone mask.")
+
+    counts = ndi.sum(mask, labeled, range(1, num_features + 1))
+    max_count = max(counts) if len(counts) > 0 else 0
+    min_valid = max(10, int(0.01 * max_count))
+    major_labels = [idx + 1 for idx, c in enumerate(counts) if c >= min_valid]
+    major_labels.sort(key=lambda lbl: counts[lbl - 1], reverse=True)
+
+    if len(major_labels) >= 2:
+        lbl_a, lbl_b = major_labels[0], major_labels[1]
+        coords_a = np.argwhere(labeled == lbl_a)
+        coords_b = np.argwhere(labeled == lbl_b)
+        lps_a = _voxel_to_lps(coords_a.mean(axis=0))
+        lps_b = _voxel_to_lps(coords_b.mean(axis=0))
+
+        # In DICOM LPS, +Y is Posterior (Scapula) and -Y is Anterior (Humerus)
+        ap_diff_mm = abs(float(lps_a[1] - lps_b[1]))
+        if lps_a[1] >= lps_b[1]:
+            scap_lbl, hum_lbl = lbl_a, lbl_b
+        else:
+            scap_lbl, hum_lbl = lbl_b, lbl_a
+
+        scapula_mask = labeled == scap_lbl
+        humerus_mask = labeled == hum_lbl
+
+        if ap_diff_mm < 5.0:
+            return (
+                {"scapula": scapula_mask, "humerus": humerus_mask},
+                "connected_components",
+                {
+                    "separationStatus": "manual_review_required",
+                    "separationConfidence": round(min(0.49, ap_diff_mm / 10.0), 3),
+                    "separationNotes": "Ambiguous anterior-posterior separation (< 5 mm) in patient LPS coordinates; manual review required.",
+                    "overlapVoxelCount": 0,
+                },
+            )
+
+        confidence = round(min(0.99, 0.65 + min(ap_diff_mm, 40.0) / 120.0), 3)
+        return (
+            {"scapula": scapula_mask, "humerus": humerus_mask},
+            "connected_components",
+            {
+                "separationStatus": "verified",
+                "separationConfidence": confidence,
+                "overlapVoxelCount": 0,
+            },
+        )
+
+    # Single connected component (touching/overlapping at glenohumeral joint):
+    distance = ndi.distance_transform_edt(mask, sampling=spacing)
+    fg_coords = np.argwhere(mask)
+    fg_lps = _voxel_to_lps(fg_coords)
+    y_vals = fg_lps[:, 1]
+    y_spread_mm = float(np.ptp(y_vals))
+    y_mid = float(np.median(y_vals))
+
+    post_mask_idx = y_vals >= y_mid
+    ant_mask_idx = y_vals < y_mid
+
+    if y_spread_mm < 5.0 or not np.any(post_mask_idx) or not np.any(ant_mask_idx):
+        scapula_mask = mask.astype(bool)
+        humerus_mask = np.zeros_like(mask, dtype=bool)
+        return (
+            {"scapula": scapula_mask, "humerus": humerus_mask},
+            "single_component_uncertain",
+            {
+                "separationStatus": "manual_review_required",
+                "separationConfidence": 0.1,
+                "separationNotes": "Single connected component with insufficient anterior-posterior spread (< 5 mm); manual review required.",
+                "overlapVoxelCount": 0,
+            },
+        )
+
+    post_coords = fg_coords[post_mask_idx]
+    ant_coords = fg_coords[ant_mask_idx]
+
+    post_dists = distance[post_coords[:, 0], post_coords[:, 1], post_coords[:, 2]]
+    ant_dists = distance[ant_coords[:, 0], ant_coords[:, 1], ant_coords[:, 2]]
+
+    scap_idx = int(np.argmax(post_dists))
+    hum_idx = int(np.argmax(ant_dists))
+    scap_seed = post_coords[scap_idx]
+    hum_seed = ant_coords[hum_idx]
+    scap_peak = float(post_dists[scap_idx])
+    hum_peak = float(ant_dists[hum_idx])
+
+    markers = np.zeros(mask.shape, dtype=np.int32)
+    markers[scap_seed[0], scap_seed[1], scap_seed[2]] = 1
+    markers[hum_seed[0], hum_seed[1], hum_seed[2]] = 2
+
+    ws_labels = watershed(-distance, markers, mask=mask)
+    scapula_mask = ws_labels == 1
+    humerus_mask = ws_labels == 2
+
+    scap_count = int(scapula_mask.sum())
+    hum_count = int(humerus_mask.sum())
+    if scap_count < 10 or hum_count < 10:
+        return (
+            {"scapula": scapula_mask, "humerus": humerus_mask},
+            "watershed_distance_transform",
+            {
+                "separationStatus": "manual_review_required",
+                "separationConfidence": 0.25,
+                "separationNotes": "Watershed produced a very small structure (< 10 voxels); manual review required.",
+                "overlapVoxelCount": 0,
+            },
+        )
+
+    # Check if there is a genuine anatomical waist/neck between the two seeds
+    min_peak = min(scap_peak, hum_peak)
+    neck_region = ndi.binary_dilation(scapula_mask, iterations=1) & humerus_mask
+    neck_dist = float(distance[neck_region].max()) if np.any(neck_region) else min_peak
+    neck_ratio = neck_dist / max(min_peak, 1e-6)
+
+    if neck_ratio >= 0.85:
+        return (
+            {"scapula": scapula_mask, "humerus": humerus_mask},
+            "watershed_distance_transform",
+            {
+                "separationStatus": "manual_review_required",
+                "separationConfidence": round(max(0.2, 1.0 - neck_ratio), 3),
+                "separationNotes": "No clear anatomical waist/neck between touching structures; manual review required.",
+                "overlapVoxelCount": 0,
+            },
+        )
+
+    confidence = round(min(0.95, max(0.55, 1.0 - 0.5 * neck_ratio)), 3)
+    return (
+        {"scapula": scapula_mask, "humerus": humerus_mask},
+        "watershed_distance_transform",
+        {
+            "separationStatus": "verified",
+            "separationConfidence": confidence,
+            "overlapVoxelCount": 0,
+        },
+    )
+
+
+def compute_bone_quality_metrics(
+    volume: Any,
+    analysis: Dict[str, Any],
+    scapula_mask: Optional[Any] = None,
+    humerus_mask: Optional[Any] = None,
+    low_hu: float = 150.0,
+    mid_hu: float = 300.0,
+    high_hu: float = 700.0,
+) -> Dict[str, Any]:
+    """
+    Compute regional CT attenuation (HU) statistics for scapula and humerus masks.
+    Distinguishes calibrated HU from uncalibrated pixel values and never fabricates BMD.
+    """
+    if not IMAGING_AVAILABLE:
+        raise DicomValidationError("numpy is required for bone quality analysis.")
+
+    spacing = [float(s) for s in analysis.get("spacingMm", [1.0, 1.0, 1.0])]
+    voxel_vol_mm3 = spacing[0] * spacing[1] * spacing[2]
+    calibrated = bool(
+        analysis.get("rescaleSlope") is not None
+        or analysis.get("rescaleIntercept") is not None
+        or analysis.get("huCalibrated", True)
+    )
+
+    def _stats_for_mask(m: Optional[Any]) -> Optional[Dict[str, Any]]:
+        if m is None or not bool(m.any()):
+            return None
+        vals = volume[m.astype(bool)].astype(np.float64)
+        count = int(vals.size)
+        b1 = int(np.sum(vals < low_hu))
+        b2 = int(np.sum((vals >= low_hu) & (vals < mid_hu)))
+        b3 = int(np.sum((vals >= mid_hu) & (vals < high_hu)))
+        b4 = int(np.sum(vals >= high_hu))
+        return {
+            "voxelCount": count,
+            "volumeMm3": round(count * voxel_vol_mm3, 3),
+            "meanHu": round(float(np.mean(vals)), 2),
+            "minHu": round(float(np.min(vals)), 2),
+            "maxHu": round(float(np.max(vals)), 2),
+            "stdHu": round(float(np.std(vals)), 2),
+            "bins": [
+                {"label": f"< {int(low_hu)} HU", "minHu": None, "maxHu": low_hu, "voxelCount": b1, "color": "#ef4444"},
+                {"label": f"{int(low_hu)}–{int(mid_hu)} HU", "minHu": low_hu, "maxHu": mid_hu, "voxelCount": b2, "color": "#f59e0b"},
+                {"label": f"{int(mid_hu)}–{int(high_hu)} HU", "minHu": mid_hu, "maxHu": high_hu, "voxelCount": b3, "color": "#10b981"},
+                {"label": f">= {int(high_hu)} HU", "minHu": high_hu, "maxHu": None, "voxelCount": b4, "color": "#06b6d4"},
+            ],
+        }
+
+    scap_stats = _stats_for_mask(scapula_mask)
+    hum_stats = _stats_for_mask(humerus_mask)
+    combined_mask = None
+    if scapula_mask is not None and humerus_mask is not None:
+        combined_mask = scapula_mask.astype(bool) | humerus_mask.astype(bool)
+    elif scapula_mask is not None:
+        combined_mask = scapula_mask.astype(bool)
+    elif humerus_mask is not None:
+        combined_mask = humerus_mask.astype(bool)
+
+    return {
+        "calibrated": calibrated,
+        "unit": "HU" if calibrated else "uncalibrated_intensity",
+        "thresholds": {"lowHu": low_hu, "midHu": mid_hu, "highHu": high_hu},
+        "scapula": scap_stats,
+        "humerus": hum_stats,
+        "combined": _stats_for_mask(combined_mask),
+        "disclaimer": (
+            "CT attenuation (HU) is not equivalent to a clinically validated bone mineral density (BMD) "
+            "measurement and must not be used for osteoporosis diagnosis."
+        ),
+    }
+
+
+def detect_shoulder_landmarks(
+    scapula_mask: Optional[Any],
+    humerus_mask: Optional[Any],
+    analysis: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Detect shoulder anatomical landmarks using 3D geometric/morphological analysis
+    in DICOM patient LPS coordinates. Marks landmarks as 'ai_assisted' with
+    'manual_review_required' status (no trained deep learning model is claimed).
+    """
+    if not IMAGING_AVAILABLE:
+        raise DicomValidationError("numpy is required for landmark detection.")
+
+    has_scap = scapula_mask is not None and bool(scapula_mask.any())
+    has_hum = humerus_mask is not None and bool(humerus_mask.any())
+    if not has_scap and not has_hum:
+        raise DicomValidationError("Cannot detect landmarks from empty segmentation masks.")
+
+    spacing = [float(s) for s in analysis.get("spacingMm", [1.0, 1.0, 1.0])]
+    orientation = np.asarray(analysis.get("orientation", [1, 0, 0, 0, 1, 0]), dtype=np.float64)
+    row_dir = orientation[:3]
+    col_dir = orientation[3:]
+    norm_dir = np.cross(row_dir, col_dir)
+    origin = np.asarray(analysis.get("originMm", [0.0, 0.0, 0.0]), dtype=np.float64)
+    transform = np.column_stack((norm_dir, row_dir, col_dir))
+
+    def _to_lps(zyx: np.ndarray) -> np.ndarray:
+        scaled = zyx * np.asarray(spacing, dtype=np.float64)
+        return origin + scaled @ transform.T
+
+    landmarks: List[Dict[str, Any]] = []
+
+    if has_scap:
+        scap_lps = _to_lps(np.argwhere(scapula_mask.astype(bool)))
+        scap_conf = round(min(0.85, max(0.35, len(scap_lps) / 5000.0)), 2)
+
+        # Determine humeral-facing direction (lateral)
+        if has_hum:
+            hum_center = _to_lps(np.argwhere(humerus_mask.astype(bool))).mean(axis=0)
+            lat_vec = hum_center - scap_lps.mean(axis=0)
+            lat_norm = np.linalg.norm(lat_vec)
+            lat_dir = lat_vec / lat_norm if lat_norm > 1e-6 else np.array([1.0, 0.0, 0.0])
+        else:
+            lat_dir = np.array([1.0, 0.0, 0.0])
+
+        lat_proj = scap_lps @ lat_dir
+        glenoid_region = scap_lps[lat_proj >= np.percentile(lat_proj, 85)]
+        glenoid_center = glenoid_region.mean(axis=0)
+        glenoid_sup = glenoid_region[int(np.argmax(glenoid_region[:, 2]))]
+        glenoid_inf = glenoid_region[int(np.argmin(glenoid_region[:, 2]))]
+
+        sup_region = scap_lps[scap_lps[:, 2] >= np.percentile(scap_lps[:, 2], 85)]
+        acromion = sup_region[int(np.argmax(sup_region @ lat_dir))]
+        coracoid = sup_region[int(np.argmin(sup_region[:, 1]))]  # Most anterior (-Y) superior point
+        scap_spine = scap_lps[int(np.argmax(scap_lps[:, 1]))]   # Most posterior (+Y) point
+
+        for name, pt in [
+            ("Glenoid center", glenoid_center),
+            ("Glenoid superior point", glenoid_sup),
+            ("Glenoid inferior point", glenoid_inf),
+            ("Acromion", acromion),
+            ("Coracoid process", coracoid),
+            ("Scapular spine", scap_spine),
+        ]:
+            landmarks.append({
+                "name": name,
+                "coordinatesMm": [round(float(v), 2) for v in pt],
+                "structure": "scapula",
+                "source": "ai_assisted",
+                "status": "manual_review_required",
+                "confidence": scap_conf,
+            })
+
+    if has_hum:
+        hum_lps = _to_lps(np.argwhere(humerus_mask.astype(bool)))
+        hum_conf = round(min(0.85, max(0.35, len(hum_lps) / 5000.0)), 2)
+        prox_region = hum_lps[hum_lps[:, 2] >= np.percentile(hum_lps[:, 2], 70)]
+        dist_region = hum_lps[hum_lps[:, 2] <= np.percentile(hum_lps[:, 2], 30)]
+        hum_head = prox_region.mean(axis=0)
+        hum_shaft = dist_region.mean(axis=0)
+
+        for name, pt in [
+            ("Humeral head center", hum_head),
+            ("Humeral shaft axis", hum_shaft),
+        ]:
+            landmarks.append({
+                "name": name,
+                "coordinatesMm": [round(float(v), 2) for v in pt],
+                "structure": "humerus",
+                "source": "ai_assisted",
+                "status": "manual_review_required",
+                "confidence": hum_conf,
+            })
+
+    return {
+        "landmarks": landmarks,
+        "detectionMethod": "geometric_morphological_lps",
+        "status": "manual_review_required",
+        "limitations": (
+            "Geometric/morphological landmark estimation without a trained deep learning model; "
+            "all detected landmarks require clinician review and manual adjustment."
+        ),
+    }
+
+
+

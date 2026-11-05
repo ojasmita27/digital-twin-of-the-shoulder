@@ -35,6 +35,17 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   const [customMeshFile, setCustomMeshFile] = useState<{ name: string; size: number } | null>(null);
   const [meshError, setMeshError] = useState<string | null>(null);
   const [customMeshBuffer, setCustomMeshBuffer] = useState<ArrayBuffer | null>(null);
+  const [scapulaBuffer, setScapulaBuffer] = useState<ArrayBuffer | null>(null);
+  const [humerusBuffer, setHumerusBuffer] = useState<ArrayBuffer | null>(null);
+  const [scapulaColor, setScapulaColor] = useState('#e8dec8');
+  const [humerusColor, setHumerusColor] = useState('#cbd5e1');
+  const [scapulaOpacity, setScapulaOpacity] = useState(1.0);
+  const [humerusOpacity, setHumerusOpacity] = useState(1.0);
+  const [boneQualityEnabled, setBoneQualityEnabled] = useState(false);
+  const [boneQualityLoading, setBoneQualityLoading] = useState(false);
+  const [boneQualityData, setBoneQualityData] = useState<Record<string, any> | null>(null);
+  const [huThresholds, setHuThresholds] = useState({ lowHu: 150, midHu: 300, highHu: 700 });
+  const [detectingLandmarks, setDetectingLandmarks] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
   const [landmarkMode, setLandmarkMode] = useState(false);
   const [landmarkMoveMode, setLandmarkMoveMode] = useState(false);
@@ -57,8 +68,9 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   const savedModel = (
     patientMeshes.find((mesh) => mesh.id === viewerPreferences.selectedModelId) || patientMeshes[patientMeshes.length - 1]
   ) as MeshArtifact | undefined;
-  const hasSeparatePatientBones = patientMeshes.some((mesh) => mesh.structure === 'scapula')
-    && patientMeshes.some((mesh) => mesh.structure === 'humerus');
+  const scapulaMesh = [...patientMeshes].reverse().find((mesh) => mesh.structure === 'scapula');
+  const humerusMesh = [...patientMeshes].reverse().find((mesh) => mesh.structure === 'humerus');
+  const hasSeparatePatientBones = Boolean(scapulaMesh && humerusMesh);
   const landmarks = (activeCase?.landmarks || []).filter((landmark) => (
     !savedModel || (landmark.modelId === savedModel.id && landmark.modelVersion === (savedModel.version || 1))
   ));
@@ -74,6 +86,26 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
       selectedSliceIndex: activeCase?.viewerPreferences?.selectedSliceIndex,
     });
   }, [activeCase?.id, activeCase?.viewerPreferences]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeCase?.id || !scapulaMesh || !humerusMesh) {
+      setScapulaBuffer(null);
+      setHumerusBuffer(null);
+      return;
+    }
+    Promise.all([
+      apiClient.downloadModel(activeCase.id, scapulaMesh.id),
+      apiClient.downloadModel(activeCase.id, humerusMesh.id),
+    ]).then(([scapRes, humRes]) => {
+      if (cancelled) return;
+      if (scapRes.data) setScapulaBuffer(scapRes.data);
+      if (humRes.data) setHumerusBuffer(humRes.data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCase?.id, scapulaMesh?.id, humerusMesh?.id]);
 
   const persistViewerPreferences = (next: ViewerPreferences) => {
     setViewerPreferences(next);
@@ -283,10 +315,194 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                         {hasSeparatePatientBones ? 'SEPARATE MESHES' : 'COMBINED / UNSUPPORTED'}
                       </span>
                     </div>
-                    {!hasSeparatePatientBones && (
+                    {!hasSeparatePatientBones ? (
                       <p className="text-[11px] text-amber-700 dark:text-amber-300">
                         The saved reconstruction does not contain independently labeled scapula and humerus meshes. Structure toggles remain available for the procedural template only; no anatomy is fabricated.
                       </p>
+                    ) : (
+                      <div className="space-y-2.5 pt-1">
+                        <div className="rounded bg-slate-50 dark:bg-slate-800/60 p-2.5 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={viewerPreferences.scapulaVisible}
+                                onChange={(e) => persistViewerPreferences({ ...viewerPreferences, scapulaVisible: e.target.checked })}
+                                className="rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                              />
+                              <span>Scapula</span>
+                            </label>
+                            <input
+                              type="color"
+                              value={scapulaColor}
+                              onChange={(e) => setScapulaColor(e.target.value)}
+                              title="Scapula color"
+                              className="h-5 w-7 cursor-pointer rounded border border-slate-300 dark:border-slate-700 bg-transparent"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                            <span>Opacity</span>
+                            <input
+                              type="range"
+                              min={0.15}
+                              max={1}
+                              step={0.05}
+                              value={scapulaOpacity}
+                              onChange={(e) => setScapulaOpacity(parseFloat(e.target.value))}
+                              className="flex-1 accent-teal-600"
+                            />
+                            <span className="w-8 text-right font-mono">{Math.round(scapulaOpacity * 100)}%</span>
+                          </div>
+                        </div>
+
+                        <div className="rounded bg-slate-50 dark:bg-slate-800/60 p-2.5 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <label className="flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={viewerPreferences.humerusVisible}
+                                onChange={(e) => persistViewerPreferences({ ...viewerPreferences, humerusVisible: e.target.checked })}
+                                className="rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                              />
+                              <span>Humerus</span>
+                            </label>
+                            <input
+                              type="color"
+                              value={humerusColor}
+                              onChange={(e) => setHumerusColor(e.target.value)}
+                              title="Humerus color"
+                              className="h-5 w-7 cursor-pointer rounded border border-slate-300 dark:border-slate-700 bg-transparent"
+                            />
+                          </div>
+                          <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                            <span>Opacity</span>
+                            <input
+                              type="range"
+                              min={0.15}
+                              max={1}
+                              step={0.05}
+                              value={humerusOpacity}
+                              onChange={(e) => setHumerusOpacity(parseFloat(e.target.value))}
+                              className="flex-1 accent-teal-600"
+                            />
+                            <span className="w-8 text-right font-mono">{Math.round(humerusOpacity * 100)}%</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {activeCase?.segmentationJob && (
+                      <div className="border-t border-slate-200 dark:border-slate-800 pt-2.5 mt-2.5 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">CT Bone Quality (HU)</span>
+                          <label className="flex items-center gap-1.5 text-[11px] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={boneQualityEnabled}
+                              onChange={async (e) => {
+                                const next = e.target.checked;
+                                setBoneQualityEnabled(next);
+                                if (next && !boneQualityData && activeCase?.id) {
+                                  setBoneQualityLoading(true);
+                                  const res = await apiClient.getBoneQuality(
+                                    activeCase.id,
+                                    huThresholds.lowHu,
+                                    huThresholds.midHu,
+                                    huThresholds.highHu,
+                                  );
+                                  setBoneQualityLoading(false);
+                                  if (res.data) setBoneQualityData(res.data);
+                                  else if (res.error) setMeshError(res.error);
+                                }
+                              }}
+                              className="rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                            />
+                            <span>Overlay</span>
+                          </label>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                          <label className="flex flex-col">
+                            <span className="text-slate-500">Low HU</span>
+                            <input
+                              type="number"
+                              value={huThresholds.lowHu}
+                              onChange={(e) => setHuThresholds((p) => ({ ...p, lowHu: Number(e.target.value) }))}
+                              className="rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-1.5 py-0.5"
+                            />
+                          </label>
+                          <label className="flex flex-col">
+                            <span className="text-slate-500">Mid HU</span>
+                            <input
+                              type="number"
+                              value={huThresholds.midHu}
+                              onChange={(e) => setHuThresholds((p) => ({ ...p, midHu: Number(e.target.value) }))}
+                              className="rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-1.5 py-0.5"
+                            />
+                          </label>
+                          <label className="flex flex-col">
+                            <span className="text-slate-500">High HU</span>
+                            <input
+                              type="number"
+                              value={huThresholds.highHu}
+                              onChange={(e) => setHuThresholds((p) => ({ ...p, highHu: Number(e.target.value) }))}
+                              className="rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 px-1.5 py-0.5"
+                            />
+                          </label>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={boneQualityLoading}
+                          onClick={async () => {
+                            if (!activeCase?.id) return;
+                            setBoneQualityLoading(true);
+                            const res = await apiClient.getBoneQuality(
+                              activeCase.id,
+                              huThresholds.lowHu,
+                              huThresholds.midHu,
+                              huThresholds.highHu,
+                            );
+                            setBoneQualityLoading(false);
+                            if (res.data) {
+                              setBoneQualityData(res.data);
+                              setBoneQualityEnabled(true);
+                            } else if (res.error) {
+                              setMeshError(res.error);
+                            }
+                          }}
+                          className="w-full rounded bg-slate-800 dark:bg-slate-700 text-white py-1 text-[11px] font-medium hover:bg-slate-700 disabled:opacity-50"
+                        >
+                          {boneQualityLoading ? 'Analyzing HU...' : 'Compute Regional HU Stats'}
+                        </button>
+                        {boneQualityData && (
+                          <div className="space-y-1.5 text-[10px] bg-slate-50 dark:bg-slate-800/50 p-2 rounded">
+                            <div className="flex justify-between font-semibold">
+                              <span>Calibration</span>
+                              <span className={boneQualityData.calibrated ? 'text-emerald-600' : 'text-amber-600'}>
+                                {boneQualityData.calibrated ? 'Calibrated HU' : 'Uncalibrated'}
+                              </span>
+                            </div>
+                            {(['scapula', 'humerus'] as const).map((k) => {
+                              const st = boneQualityData[k];
+                              if (!st) return null;
+                              return (
+                                <div key={k} className="border-t border-slate-200 dark:border-slate-700 pt-1">
+                                  <div className="font-semibold capitalize">{k} ({st.voxelCount} vox)</div>
+                                  <div>Mean: {st.meanHu} | SD: {st.stdHu} HU</div>
+                                  <div>Range: {st.minHu} to {st.maxHu} HU</div>
+                                </div>
+                              );
+                            })}
+                            <div className="flex flex-wrap gap-1.5 pt-1">
+                              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500" />&lt;{huThresholds.lowHu}</span>
+                              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500" />{huThresholds.lowHu}-{huThresholds.midHu}</span>
+                              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500" />{huThresholds.midHu}-{huThresholds.highHu}</span>
+                              <span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-500" />&ge;{huThresholds.highHu}</span>
+                            </div>
+                            <p className="text-[9px] text-slate-500 dark:text-slate-400 leading-tight">
+                              CT attenuation (HU) is not equivalent to a clinically validated BMD measurement.
+                            </p>
+                          </div>
+                        )}
+                      </div>
                     )}
                     {patientMeshes.length > 0 && (
                       <div className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -372,9 +588,29 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
 
             {activeTab === 'landmarks' && (
               <div className="space-y-2">
+                <button
+                  type="button"
+                  disabled={detectingLandmarks || !activeCase?.segmentationJob}
+                  onClick={async () => {
+                    if (!activeCase?.id) return;
+                    setDetectingLandmarks(true);
+                    const res = await apiClient.detectLandmarks(activeCase.id);
+                    setDetectingLandmarks(false);
+                    if (res.data && Array.isArray(res.data.landmarks)) {
+                      const next = res.data.landmarks as AnatomicalLandmark[];
+                      onUpdateCaseLandmarks?.(next);
+                      caseStorage.updateCase(activeCase.id, { landmarks: next });
+                    } else if (res.error) {
+                      setMeshError(res.error);
+                    }
+                  }}
+                  className="w-full rounded bg-teal-600 hover:bg-teal-700 text-white py-1.5 px-2 text-[11px] font-semibold disabled:opacity-50"
+                >
+                  {detectingLandmarks ? 'Detecting Landmarks...' : 'Detect Landmarks (Geometric/AI-Assisted)'}
+                </button>
                 <div className="flex items-center justify-between">
                   <div className="text-[11px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 font-semibold">
-                    Manual Landmarks
+                    Anatomical Landmarks
                   </div>
                   {selectedLandmark && savedModel && (
                     <div className="space-y-2 rounded border border-teal-200 dark:border-cyan-800/50 p-2">
@@ -618,7 +854,21 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
         <div className="lg:col-span-3 h-full">
           <ShoulderScene
             landmarks={landmarks}
-            customStlBuffer={customMeshBuffer}
+            customStlBuffer={hasSeparatePatientBones ? null : customMeshBuffer}
+            scapulaBuffer={scapulaBuffer}
+            humerusBuffer={humerusBuffer}
+            scapulaColor={
+              boneQualityEnabled && boneQualityData?.scapula
+                ? (boneQualityData.scapula.meanHu < huThresholds.lowHu ? '#ef4444' : boneQualityData.scapula.meanHu < huThresholds.midHu ? '#f59e0b' : boneQualityData.scapula.meanHu < huThresholds.highHu ? '#10b981' : '#06b6d4')
+                : scapulaColor
+            }
+            humerusColor={
+              boneQualityEnabled && boneQualityData?.humerus
+                ? (boneQualityData.humerus.meanHu < huThresholds.lowHu ? '#ef4444' : boneQualityData.humerus.meanHu < huThresholds.midHu ? '#f59e0b' : boneQualityData.humerus.meanHu < huThresholds.highHu ? '#10b981' : '#06b6d4')
+                : humerusColor
+            }
+            scapulaOpacity={scapulaOpacity}
+            humerusOpacity={humerusOpacity}
             customModelName={savedModel?.filename || 'restored-model.stl'}
             unitScale={savedModel?.unit || 'unknown'}
             scapulaVisible={viewerPreferences.scapulaVisible}

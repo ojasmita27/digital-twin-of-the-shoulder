@@ -91,6 +91,12 @@ interface ShoulderSceneProps {
   humerusVisible?: boolean;
   showLandmarks?: boolean;
   onVisibilityChange?: (visibility: { scapulaVisible: boolean; humerusVisible: boolean; landmarksVisible: boolean }) => void;
+  scapulaBuffer?: ArrayBuffer | null;
+  humerusBuffer?: ArrayBuffer | null;
+  scapulaColor?: string;
+  humerusColor?: string;
+  scapulaOpacity?: number;
+  humerusOpacity?: number;
 }
 
 export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
@@ -132,6 +138,12 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   humerusVisible: humerusVisibleProp,
   showLandmarks: showLandmarksProp,
   onVisibilityChange,
+  scapulaBuffer = null,
+  humerusBuffer = null,
+  scapulaColor = '#e8dec8',
+  humerusColor = '#cbd5e1',
+  scapulaOpacity = 1.0,
+  humerusOpacity = 1.0,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -144,6 +156,8 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   // Model refs
   const modelRef = useRef<ProceduralShoulderModel | null>(null);
   const customMeshRef = useRef<THREE.Mesh | null>(null);
+  const scapulaMeshRef = useRef<THREE.Mesh | null>(null);
+  const humerusMeshRef = useRef<THREE.Mesh | null>(null);
   const implantMeshRef = useRef<THREE.Object3D | null>(null);
   const measurementGroupRef = useRef<THREE.Group | null>(null);
   const landmarksManagerRef = useRef<LandmarkMarkersManager | null>(null);
@@ -366,7 +380,10 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     const handleMeshClick = (event: MouseEvent) => {
-      if (!customMeshRef.current) return;
+      const targetMeshes = [customMeshRef.current, scapulaMeshRef.current, humerusMeshRef.current].filter(
+        (m): m is THREE.Mesh => m !== null && m.visible,
+      );
+      if (targetMeshes.length === 0) return;
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.set(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,
@@ -392,7 +409,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
           return;
         }
       }
-      const hit = raycaster.intersectObject(customMeshRef.current, false)[0];
+      const hit = raycaster.intersectObjects(targetMeshes, false)[0];
       if (!hit) return;
       if (landmarkMoveModeRef.current) {
         if (activeLandmarkIdRef.current && onLandmarkMoveRef.current) {
@@ -513,6 +530,105 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       onMeshError?.(message);
     }
   }, [customStlBuffer]);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    if (scapulaMeshRef.current) {
+      scene.remove(scapulaMeshRef.current);
+      scapulaMeshRef.current.geometry.dispose();
+      (scapulaMeshRef.current.material as THREE.Material).dispose();
+      scapulaMeshRef.current = null;
+    }
+    if (!scapulaBuffer) return;
+    try {
+      const meshInfo = parseModelArrayBuffer(scapulaBuffer, 'scapula.stl');
+      const mesh = new THREE.Mesh(
+        meshInfo.geometry,
+        new THREE.MeshStandardMaterial({
+          color: scapulaColor,
+          roughness: 0.62,
+          metalness: 0.05,
+          transparent: scapulaOpacity < 1.0,
+          opacity: scapulaOpacity,
+          side: THREE.DoubleSide,
+        }),
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.visible = resolvedScapulaVisible;
+      scene.add(mesh);
+      scapulaMeshRef.current = mesh;
+      if (modelRef.current) modelRef.current.group.visible = false;
+      if (customMeshRef.current) customMeshRef.current.visible = false;
+      const group = new THREE.Group();
+      group.add(mesh.clone());
+      if (humerusMeshRef.current) group.add(humerusMeshRef.current.clone());
+      fitObjectToView(group);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The scapula STL file could not be parsed.';
+      setCustomMeshError(message);
+      onMeshError?.(message);
+    }
+  }, [scapulaBuffer]);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    if (humerusMeshRef.current) {
+      scene.remove(humerusMeshRef.current);
+      humerusMeshRef.current.geometry.dispose();
+      (humerusMeshRef.current.material as THREE.Material).dispose();
+      humerusMeshRef.current = null;
+    }
+    if (!humerusBuffer) return;
+    try {
+      const meshInfo = parseModelArrayBuffer(humerusBuffer, 'humerus.stl');
+      const mesh = new THREE.Mesh(
+        meshInfo.geometry,
+        new THREE.MeshStandardMaterial({
+          color: humerusColor,
+          roughness: 0.6,
+          metalness: 0.05,
+          transparent: humerusOpacity < 1.0,
+          opacity: humerusOpacity,
+          side: THREE.DoubleSide,
+        }),
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.visible = resolvedHumerusVisible;
+      scene.add(mesh);
+      humerusMeshRef.current = mesh;
+      if (modelRef.current) modelRef.current.group.visible = false;
+      if (customMeshRef.current) customMeshRef.current.visible = false;
+      const group = new THREE.Group();
+      if (scapulaMeshRef.current) group.add(scapulaMeshRef.current.clone());
+      group.add(mesh.clone());
+      fitObjectToView(group);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The humerus STL file could not be parsed.';
+      setCustomMeshError(message);
+      onMeshError?.(message);
+    }
+  }, [humerusBuffer]);
+
+  useEffect(() => {
+    if (scapulaMeshRef.current) {
+      const mat = scapulaMeshRef.current.material as THREE.MeshStandardMaterial;
+      mat.color.set(scapulaColor);
+      mat.transparent = scapulaOpacity < 1.0;
+      mat.opacity = scapulaOpacity;
+      mat.needsUpdate = true;
+    }
+    if (humerusMeshRef.current) {
+      const mat = humerusMeshRef.current.material as THREE.MeshStandardMaterial;
+      mat.color.set(humerusColor);
+      mat.transparent = humerusOpacity < 1.0;
+      mat.opacity = humerusOpacity;
+      mat.needsUpdate = true;
+    }
+  }, [scapulaColor, scapulaOpacity, humerusColor, humerusOpacity]);
 
   useEffect(() => {
     if (!implantBuffer || !sceneRef.current) return;
@@ -709,6 +825,12 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       modelRef.current.humerusGroup.visible = resolvedHumerusVisible;
       modelRef.current.materials.cartilage.visible = cartilageVisible;
     }
+    if (scapulaMeshRef.current) {
+      scapulaMeshRef.current.visible = resolvedScapulaVisible;
+    }
+    if (humerusMeshRef.current) {
+      humerusMeshRef.current.visible = resolvedHumerusVisible;
+    }
   }, [resolvedScapulaVisible, resolvedHumerusVisible, cartilageVisible]);
 
   // Update Helpers
@@ -821,7 +943,12 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   };
 
   const handleResetCamera = () => {
-    if (customMeshRef.current) {
+    if (scapulaMeshRef.current || humerusMeshRef.current) {
+      const group = new THREE.Group();
+      if (scapulaMeshRef.current) group.add(scapulaMeshRef.current.clone());
+      if (humerusMeshRef.current) group.add(humerusMeshRef.current.clone());
+      fitObjectToView(group);
+    } else if (customMeshRef.current) {
       fitObjectToView(customMeshRef.current);
     } else {
       applyCameraPreset('anterior');

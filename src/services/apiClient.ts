@@ -11,6 +11,7 @@ import {
 } from '../types/api';
 import { AnatomicalLandmark, ImplantAsset, ImplantReferencePoint, ImplantSpatialAnalysis, MeshArtifact, PlanningMeasurement, PlanningVersion, ResearchCase, SavedMeasurement } from '../types/case';
 
+export const LOCAL_FASTAPI_BACKEND = 'http://127.0.0.1:8001';
 export const PRODUCTION_RENDER_BACKEND = 'https://digital-twin-of-the-shoulder.onrender.com';
 
 function resolveDefaultBaseUrl(): string {
@@ -20,8 +21,8 @@ function resolveDefaultBaseUrl(): string {
     return envUrl.trim();
   }
 
-  // 2. Default to active deployed Render backend
-  return PRODUCTION_RENDER_BACKEND;
+  // 2. Default to local FastAPI backend
+  return LOCAL_FASTAPI_BACKEND;
 }
 
 const DEFAULT_CONFIG: BackendConfig = {
@@ -602,6 +603,7 @@ export class ApiClient {
     sliceIndex: number,
     windowCenter?: number,
     windowWidth?: number,
+    structure?: 'combined' | 'scapula' | 'humerus',
   ): Promise<ApiCallResult<{
     ctPreviewUrl: string;
     maskPreviewUrl?: string | null;
@@ -611,8 +613,9 @@ export class ApiClient {
     spacingMm: number[];
     segmentationVersion?: number;
   }>> {
+    const structureQuery = structure && structure !== 'combined' ? `&structure=${encodeURIComponent(structure)}` : '';
     return this.request(
-      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation/preview?orientation=${orientation}&sliceIndex=${sliceIndex}&windowCenter=${windowCenter ?? 450}&windowWidth=${windowWidth ?? 1500}`,
+      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation/preview?orientation=${orientation}&sliceIndex=${sliceIndex}&windowCenter=${windowCenter ?? 450}&windowWidth=${windowWidth ?? 1500}${structureQuery}`,
       { method: 'GET' },
     );
   }
@@ -621,14 +624,83 @@ export class ApiClient {
     caseId: string,
     sliceIndex: number,
     operations: Array<{ x: number; y: number; radius: number; add: boolean }>,
+    structure?: 'combined' | 'scapula' | 'humerus',
   ): Promise<ApiCallResult<Record<string, unknown>>> {
     return this.request<Record<string, unknown>>(
       `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation/corrections`,
       {
         method: 'POST',
-        body: JSON.stringify({ sliceIndex, operations }),
+        body: JSON.stringify({
+          sliceIndex,
+          operations,
+          ...(structure && structure !== 'combined' ? { structure } : {}),
+        }),
       },
     );
+  }
+
+  public async getBoneQuality(
+    caseId: string,
+    lowHu = 150,
+    midHu = 300,
+    highHu = 700,
+  ): Promise<ApiCallResult<Record<string, unknown>>> {
+    return this.request(
+      `/api/cases/${encodeURIComponent(caseId)}/imaging/bone-quality?lowHu=${lowHu}&midHu=${midHu}&highHu=${highHu}`,
+      { method: 'GET' },
+    );
+  }
+
+  public async detectLandmarks(caseId: string): Promise<ApiCallResult<Record<string, unknown>>> {
+    return this.request(
+      `/api/cases/${encodeURIComponent(caseId)}/landmarks/detect`,
+      { method: 'POST' },
+    );
+  }
+
+  public async listVersions(caseId: string): Promise<ApiCallResult<{ versions: Array<Record<string, unknown>> }>> {
+    return this.request(
+      `/api/cases/${encodeURIComponent(caseId)}/versions`,
+      { method: 'GET' },
+    );
+  }
+
+  public async createVersion(
+    caseId: string,
+    changeDescription: string,
+  ): Promise<ApiCallResult<Record<string, unknown>>> {
+    return this.request(
+      `/api/cases/${encodeURIComponent(caseId)}/versions`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ changeDescription }),
+      },
+    );
+  }
+
+  public async compareVersions(
+    caseId: string,
+    v1: number,
+    v2: number,
+  ): Promise<ApiCallResult<Record<string, unknown>>> {
+    return this.request(
+      `/api/cases/${encodeURIComponent(caseId)}/versions/compare?v1=${v1}&v2=${v2}`,
+      { method: 'GET' },
+    );
+  }
+
+  public async restoreVersion(
+    caseId: string,
+    versionNumber: number,
+  ): Promise<ApiCallResult<Record<string, unknown>>> {
+    return this.request(
+      `/api/cases/${encodeURIComponent(caseId)}/versions/${versionNumber}/restore`,
+      { method: 'POST' },
+    );
+  }
+
+  public async downloadPdfReport(caseId: string): Promise<ApiCallResult<ArrayBuffer>> {
+    return this.downloadBinary(`/api/cases/${encodeURIComponent(caseId)}/report/pdf`);
   }
 }
 

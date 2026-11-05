@@ -490,3 +490,56 @@ def test_segmentation_rejects_invalid_threshold_range(auth_headers):
     )
     assert response.status_code == 422
     assert "lower than maximum" in response.json()["detail"]
+
+
+def test_separate_shoulder_bones_disconnected_and_touching():
+    import numpy as np
+    import pytest
+    from backend.app.services.dicom_service import separate_shoulder_bones, DicomValidationError
+
+    analysis = {
+        "rowDirection": [1.0, 0.0, 0.0],
+        "columnDirection": [0.0, 1.0, 0.0],
+        "normalDirection": [0.0, 0.0, 1.0],
+        "spacingMm": [1.0, 1.0, 1.0],
+    }
+
+    # 1. Disconnected components: anterior (-Y) humerus and posterior (+Y) scapula
+    mask_disconnected = np.zeros((16, 32, 16), dtype=bool)
+    mask_disconnected[4:12, 2:10, 4:12] = True   # Anterior -> humerus
+    mask_disconnected[4:12, 20:28, 4:12] = True  # Posterior -> scapula
+    res_disc, method_disc, meta_disc = separate_shoulder_bones(mask_disconnected, analysis, ["scapula", "humerus"])
+    assert method_disc == "connected_components"
+    assert meta_disc["separationStatus"] == "verified"
+    assert meta_disc["separationConfidence"] > 0.65
+    assert res_disc["scapula"].sum() == 8 * 8 * 8
+    assert res_disc["humerus"].sum() == 8 * 8 * 8
+    assert np.array_equal(res_disc["scapula"] | res_disc["humerus"], mask_disconnected)
+    assert not np.any(res_disc["scapula"] & res_disc["humerus"])
+
+    # 2. Touching/overlapping single component: two spheres connected by a narrow bridge
+    zz, yy, xx = np.ogrid[:24, :48, :24]
+    humerus_sphere = (zz - 12) ** 2 + (yy - 12) ** 2 + (xx - 12) ** 2 <= 7 ** 2
+    scapula_sphere = (zz - 12) ** 2 + (yy - 34) ** 2 + (xx - 12) ** 2 <= 7 ** 2
+    bridge = (np.abs(zz - 12) <= 1) & (yy >= 18) & (yy <= 28) & (np.abs(xx - 12) <= 1)
+    mask_touching = humerus_sphere | scapula_sphere | bridge
+    res_touch, method_touch, meta_touch = separate_shoulder_bones(mask_touching, analysis, ["scapula", "humerus"])
+    assert method_touch == "watershed_distance_transform"
+    assert meta_touch["separationStatus"] == "verified"
+    assert res_touch["scapula"].sum() > 0
+    assert res_touch["humerus"].sum() > 0
+    assert not np.any(res_touch["scapula"] & res_touch["humerus"])
+
+    # 3. Unusual orientation / ambiguous AP separation (< 5 mm) -> manual_review_required
+    mask_ambiguous = np.zeros((16, 16, 32), dtype=bool)
+    mask_ambiguous[4:12, 6:10, 2:10] = True
+    mask_ambiguous[4:12, 7:11, 20:28] = True
+    _, _, meta_ambig = separate_shoulder_bones(mask_ambiguous, analysis, ["scapula", "humerus"])
+    assert meta_ambig["separationStatus"] == "manual_review_required"
+
+    # 4. Empty mask -> raises DicomValidationError
+    empty_mask = np.zeros((8, 8, 8), dtype=bool)
+    with pytest.raises(DicomValidationError):
+        separate_shoulder_bones(empty_mask, analysis, ["scapula", "humerus"])
+
+

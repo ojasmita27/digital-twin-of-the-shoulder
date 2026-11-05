@@ -26,9 +26,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=r"^https://([a-zA-Z0-9-]+\.)*(run\.app|onrender\.com)$",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 
 # Register routers
@@ -37,6 +38,11 @@ app.include_router(auth.router)
 app.include_router(cases.router)
 app.include_router(imaging.router)
 app.include_router(models.router)
+
+
+@app.get("/health")
+def root_health():
+    return health.get_health()
 
 
 @app.get("/")
