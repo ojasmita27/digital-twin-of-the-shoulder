@@ -49,6 +49,7 @@ class ResearchCase(BaseModel):
     landmarks: List[Dict[str, Any]] = Field(default_factory=list)
     measurements: Optional[Dict[str, Any]] = None
     implantPlan: Optional[Dict[str, Any]] = None
+    planningVersions: List[Dict[str, Any]] = Field(default_factory=list)
     implantAssets: List[Dict[str, Any]] = Field(default_factory=list)
     implantReferencePoints: List[Dict[str, Any]] = Field(default_factory=list)
     planningMeasurements: List[Dict[str, Any]] = Field(default_factory=list)

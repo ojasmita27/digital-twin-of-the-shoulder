@@ -9,7 +9,7 @@ import {
   BackendConfig,
   DicomUploadResponse,
 } from '../types/api';
-import { AnatomicalLandmark, ImplantAsset, ImplantReferencePoint, MeshArtifact, PlanningMeasurement, ResearchCase, SavedMeasurement } from '../types/case';
+import { AnatomicalLandmark, ImplantAsset, ImplantReferencePoint, ImplantSpatialAnalysis, MeshArtifact, PlanningMeasurement, PlanningVersion, ResearchCase, SavedMeasurement } from '../types/case';
 
 export const PRODUCTION_RENDER_BACKEND = 'https://digital-twin-of-the-shoulder.onrender.com';
 
@@ -347,9 +347,32 @@ export class ApiClient {
     return this.downloadBinary(`/api/cases/${encodeURIComponent(caseId)}/implants/${encodeURIComponent(implantId)}/file`);
   }
 
+  public async listImplants(caseId: string): Promise<ApiCallResult<ImplantAsset[]>> {
+    return this.request<ImplantAsset[]>(`/api/cases/${encodeURIComponent(caseId)}/implants`);
+  }
+
   public async saveImplantPlanning(caseId: string, plan: Record<string, unknown>): Promise<ApiCallResult<ResearchCase['implantPlan']>> {
     return this.request<ResearchCase['implantPlan']>(`/api/cases/${encodeURIComponent(caseId)}/implant-planning`, {
       method: 'PUT',
+      body: JSON.stringify(plan),
+    });
+  }
+
+  public async listPlanningVersions(caseId: string): Promise<ApiCallResult<PlanningVersion[]>> {
+    return this.request<PlanningVersion[]>(`/api/cases/${encodeURIComponent(caseId)}/planning-versions`);
+  }
+
+  public async duplicatePlanningVersion(caseId: string, versionId: string): Promise<ApiCallResult<PlanningVersion>> {
+    return this.request<PlanningVersion>(`/api/cases/${encodeURIComponent(caseId)}/planning-versions/${encodeURIComponent(versionId)}/duplicate`, { method: 'POST' });
+  }
+
+  public async deletePlanningVersion(caseId: string, versionId: string): Promise<ApiCallResult<{ success: boolean }>> {
+    return this.request<{ success: boolean }>(`/api/cases/${encodeURIComponent(caseId)}/planning-versions/${encodeURIComponent(versionId)}`, { method: 'DELETE' });
+  }
+
+  public async analyzeImplantGeometry(caseId: string, plan: Record<string, unknown>): Promise<ApiCallResult<ImplantSpatialAnalysis>> {
+    return this.request<ImplantSpatialAnalysis>(`/api/cases/${encodeURIComponent(caseId)}/implant-analysis`, {
+      method: 'POST',
       body: JSON.stringify(plan),
     });
   }

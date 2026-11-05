@@ -7,11 +7,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { buildProceduralShoulder, ProceduralShoulderModel } from './ProceduralAnatomy';
 import { LandmarkMarkersManager } from './LandmarkMarkers';
 import { ReferencePointMarkersManager } from './ReferencePointMarkers';
 import { parseModelArrayBuffer, LoadedMeshResult } from './STLLoaderUtil';
-import { AnatomicalLandmark, ImplantReferencePoint } from '../../types/case';
+import { AnatomicalLandmark, ImplantReferencePoint, ImplantSpatialAnalysis } from '../../types/case';
 import {
   RotateCcw,
   Layers,
@@ -71,6 +72,7 @@ interface ShoulderSceneProps {
   showBone?: boolean;
   showImplant?: boolean;
   onImplantError?: (message: string) => void;
+  onSpatialAnalysis?: (analysis: ImplantSpatialAnalysis | null) => void;
   onLandmarkPoint?: (point: [number, number, number]) => void;
   unitScale?: UnitScale;
   onUnitScaleChange?: (unit: UnitScale) => void;
@@ -111,6 +113,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   showBone = true,
   showImplant = true,
   onImplantError,
+  onSpatialAnalysis,
   onLandmarkPoint,
   unitScale: unitScaleProp,
   onUnitScaleChange,
@@ -141,7 +144,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   // Model refs
   const modelRef = useRef<ProceduralShoulderModel | null>(null);
   const customMeshRef = useRef<THREE.Mesh | null>(null);
-  const implantMeshRef = useRef<THREE.Mesh | null>(null);
+  const implantMeshRef = useRef<THREE.Object3D | null>(null);
   const measurementGroupRef = useRef<THREE.Group | null>(null);
   const landmarksManagerRef = useRef<LandmarkMarkersManager | null>(null);
   const referenceMarkersManagerRef = useRef<ReferencePointMarkersManager | null>(null);
@@ -186,6 +189,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const onMeasurementRef = useRef(onMeasurement);
   const onImplantTransformChangeRef = useRef(onImplantTransformChange);
   const implantReferenceModeRef = useRef(implantReferenceMode);
+  const onSpatialAnalysisRef = useRef(onSpatialAnalysis);
   const onImplantReferencePointRef = useRef(onImplantReferencePoint);
   const onSelectImplantReferencePointRef = useRef(onSelectImplantReferencePoint);
   const implantTransformModeRef = useRef(implantTransformMode);
@@ -210,7 +214,8 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     onImplantReferencePointRef.current = onImplantReferencePoint;
     onSelectImplantReferencePointRef.current = onSelectImplantReferencePoint;
     implantTransformModeRef.current = implantTransformMode;
-  }, [activeLandmarkId, landmarkMode, landmarkMoveMode, onLandmarkPoint, onLandmarkMove, onMeasurement, onSelectLandmark, onImplantTransformChange, implantReferenceMode, onImplantReferencePoint, onSelectImplantReferencePoint, implantTransformMode]);
+    onSpatialAnalysisRef.current = onSpatialAnalysis;
+  }, [activeLandmarkId, landmarkMode, landmarkMoveMode, onLandmarkPoint, onLandmarkMove, onMeasurement, onSelectLandmark, onImplantTransformChange, implantReferenceMode, onImplantReferencePoint, onSelectImplantReferencePoint, implantTransformMode, onSpatialAnalysis]);
 
   const fitObjectToView = (object: THREE.Object3D) => {
     const camera = cameraRef.current;
@@ -231,7 +236,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   };
 
   const setImplantMeshTransform = (
-    mesh: THREE.Mesh,
+    mesh: THREE.Object3D,
     transform?: { translation: [number, number, number]; rotationDeg: [number, number, number] },
   ) => {
     const translation = transform?.translation || [0, 0, 0];
@@ -381,7 +386,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
         return;
       }
       if (implantReferenceModeRef.current && implantMeshRef.current) {
-        const implantHit = raycaster.intersectObject(implantMeshRef.current, false)[0];
+        const implantHit = raycaster.intersectObject(implantMeshRef.current, true)[0];
         if (implantHit) {
           onImplantReferencePointRef.current?.(implantHit.point.toArray() as [number, number, number]);
           return;
@@ -511,14 +516,21 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
 
   useEffect(() => {
     if (!implantBuffer || !sceneRef.current) return;
-    try {
-      const meshInfo = parseModelArrayBuffer(implantBuffer, implantModelName);
+    const scene = sceneRef.current;
+    let cancelled = false;
+    const mountImplant = (geometry: THREE.BufferGeometry | null, root?: THREE.Object3D) => {
+      if (!geometry && !root) throw new Error('The implant file did not contain renderable geometry.');
       if (implantMeshRef.current) {
-        sceneRef.current.remove(implantMeshRef.current);
-        implantMeshRef.current.geometry.dispose();
-        (implantMeshRef.current.material as THREE.Material).dispose();
+        scene.remove(implantMeshRef.current);
+        implantMeshRef.current.traverse((child) => {
+          if (child instanceof THREE.Mesh) {
+            child.geometry.dispose();
+            const materials = Array.isArray(child.material) ? child.material : [child.material];
+            materials.forEach((material) => material.dispose());
+          }
+        });
       }
-      const implant = new THREE.Mesh(meshInfo.geometry, new THREE.MeshStandardMaterial({
+      const implant = root || new THREE.Mesh(geometry as THREE.BufferGeometry, new THREE.MeshStandardMaterial({
         color: '#f59e0b',
         emissive: '#7c2d12',
         emissiveIntensity: 0.15,
@@ -526,15 +538,68 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
         roughness: 0.3,
         side: THREE.DoubleSide,
       }));
-      implant.castShadow = true;
-      implant.receiveShadow = true;
-      sceneRef.current.add(implant);
+      implant.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+      scene.add(implant);
       implantMeshRef.current = implant;
       setImplantMeshTransform(implant, implantTransform);
-    } catch (error) {
-      onImplantError?.(error instanceof Error ? error.message : 'The implant file could not be parsed.');
-    }
+      if (geometry) geometry.computeBoundingBox();
+    };
+    const load = async () => {
+      try {
+        if (implantModelName.toLowerCase().endsWith('.glb')) {
+          const loader = new GLTFLoader();
+          const gltf = await new Promise<{ scene: THREE.Group }>((resolve, reject) => loader.parse(implantBuffer, '', resolve, reject));
+          if (!cancelled) mountImplant(null, gltf.scene);
+        } else {
+          const meshInfo = parseModelArrayBuffer(implantBuffer, implantModelName);
+          if (!cancelled) mountImplant(meshInfo.geometry);
+        }
+      } catch (error) {
+        if (!cancelled) onImplantError?.(error instanceof Error ? error.message : 'The implant file could not be parsed.');
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
   }, [implantBuffer, implantModelName]);
+
+  useEffect(() => {
+    const bone = customMeshRef.current;
+    const implant = implantMeshRef.current;
+    if (!bone || !implant) {
+      onSpatialAnalysis?.(null);
+      return;
+    }
+    bone.updateMatrixWorld(true);
+    implant.updateMatrixWorld(true);
+    const boneBox = new THREE.Box3().setFromObject(bone);
+    const implantBox = new THREE.Box3().setFromObject(implant);
+    const intersects = boneBox.intersectsBox(implantBox);
+    const outside = !intersects;
+    const dimensions = (box: THREE.Box3): [number, number, number] => box.getSize(new THREE.Vector3()).toArray() as [number, number, number];
+    const tuple = (value: THREE.Vector3): [number, number, number] => value.toArray() as [number, number, number];
+    onSpatialAnalysis?.({
+      status: 'current',
+      method: 'axis_aligned_bounding_box',
+      implantBounds: { min: tuple(implantBox.min), max: tuple(implantBox.max), dimensions: dimensions(implantBox) },
+      boneBounds: { min: tuple(boneBox.min), max: tuple(boneBox.max), dimensions: dimensions(boneBox) },
+      intersects,
+      implantOutsideBone: outside,
+      warnings: [
+        ...(intersects ? ['Bounding boxes overlap. This is a geometric screening result, not clinical fit validation.'] : []),
+        ...(outside ? ['The implant bounding box is outside the selected patient model region.'] : []),
+      ],
+      patientModelId: '',
+      patientModelVersion: 0,
+      implantAssetId: '',
+      implantAssetVersion: 0,
+      computedAt: new Date().toISOString(),
+    });
+  }, [implantTransform, implantBuffer, customStlBuffer, showBone, showImplant, onSpatialAnalysis]);
 
   useEffect(() => {
     if (customMeshRef.current) customMeshRef.current.visible = showBone;

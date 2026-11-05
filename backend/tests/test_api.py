@@ -220,6 +220,55 @@ def test_model_upload_requires_case_access(auth_headers, isolated_test_database)
     assert "supported" in response.json()["detail"].lower()
 
 
+def test_glb_implant_library_and_version_lifecycle(auth_headers):
+    payload = {
+        "name": "Planning Version Subject",
+        "demographics": {
+            "researchSubjectId": "PLAN-001",
+            "ageBand": "41-60",
+            "biologicalSex": "undisclosed",
+            "indication": "Research Normative",
+            "affectedSide": "right",
+        },
+    }
+    case_id = client.post("/api/cases", json=payload, headers=auth_headers).json()["id"]
+    model = client.post(
+        f"/api/cases/{case_id}/models",
+        files={"file": ("bone.stl", b"solid bone\nendsolid bone\n", "application/sla")},
+        headers=auth_headers,
+    ).json()["model"]
+    implant = client.post(
+        f"/api/cases/{case_id}/implants",
+        files={"file": ("baseplate.glb", b"glTF", "model/gltf-binary")},
+        data={"metadata": json.dumps({"category": "baseplate", "displayName": "Research Baseplate"})},
+        headers=auth_headers,
+    )
+    assert implant.status_code == 201
+    implant_data = implant.json()["implant"]
+    assert implant_data["format"] == "glb"
+    assert implant_data["category"] == "baseplate"
+    assert client.get(f"/api/cases/{case_id}/implants", headers=auth_headers).json()[0]["displayName"] == "Research Baseplate"
+
+    plan = {
+        "patientModelId": model["id"],
+        "patientModelVersion": model["version"],
+        "implantAssetId": implant_data["id"],
+        "implantAssetVersion": implant_data["version"],
+        "implantTransform": {"translation": [0, 0, 0], "rotationDeg": [0, 0, 0], "coordinateUnit": "unknown", "unitVerified": False},
+        "planName": "Plan A",
+    }
+    saved = client.put(f"/api/cases/{case_id}/implant-planning", json=plan, headers=auth_headers)
+    assert saved.status_code == 200
+    versions = client.get(f"/api/cases/{case_id}/planning-versions", headers=auth_headers).json()
+    assert len(versions) == 1
+    duplicate = client.post(f"/api/cases/{case_id}/planning-versions/{versions[0]['id']}/duplicate", headers=auth_headers)
+    assert duplicate.status_code == 201
+    assert len(client.get(f"/api/cases/{case_id}/planning-versions", headers=auth_headers).json()) == 2
+    analysis = client.post(f"/api/cases/{case_id}/implant-analysis", json=plan, headers=auth_headers)
+    assert analysis.status_code == 200
+    assert analysis.json()["status"] == "invalid_geometry"
+
+
 def test_delete_case(auth_headers):
     payload = {
         "name": "Temporary Case",

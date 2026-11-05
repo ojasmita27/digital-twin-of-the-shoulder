@@ -5,7 +5,7 @@
 
 import React, { useEffect, useState } from 'react';
 import * as THREE from 'three';
-import { ResearchCase, ImplantPlanningConfig, MeshArtifact, ImplantAsset, ImplantReferencePoint, PlanningMeasurement } from '../../types/case';
+import { ResearchCase, ImplantPlanningConfig, ImplantSpatialAnalysis, MeshArtifact, ImplantAsset, ImplantReferencePoint, PlanningMeasurement, PlanningVersion } from '../../types/case';
 import { SceneMeasurementOverlay, ShoulderScene } from '../three/ShoulderScene';
 import { apiClient } from '../../services/apiClient';
 import { caseStorage } from '../../services/caseStorage';
@@ -35,6 +35,12 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
   const [patientBuffer, setPatientBuffer] = useState<ArrayBuffer | null>(null);
   const [implantBuffer, setImplantBuffer] = useState<ArrayBuffer | null>(null);
   const [implantAsset, setImplantAsset] = useState<ImplantAsset | null>(null);
+  const [implantLibrary, setImplantLibrary] = useState<ImplantAsset[]>(activeCase?.implantAssets || []);
+  const [planningVersions, setPlanningVersions] = useState<PlanningVersion[]>(activeCase?.planningVersions || []);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  const [compareVersionId, setCompareVersionId] = useState<string | null>(null);
+  const [planName, setPlanName] = useState('Plan A');
+  const [spatialAnalysis, setSpatialAnalysis] = useState<ImplantSpatialAnalysis | null>(null);
   const [showBone, setShowBone] = useState(true);
   const [showImplant, setShowImplant] = useState(true);
   const [translation, setTranslation] = useState<[number, number, number]>(existingPlan?.implantTransform?.translation || [0, 0, 0]);
@@ -69,6 +75,21 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
       return sum + delta * delta;
     }, 0))
     : null;
+
+  useEffect(() => {
+    if (!activeCase) {
+      setImplantLibrary([]);
+      setPlanningVersions([]);
+      return;
+    }
+    setImplantLibrary(activeCase.implantAssets || []);
+    apiClient.listImplants(activeCase.id).then((result) => {
+      if (result.data) setImplantLibrary(result.data);
+    });
+    apiClient.listPlanningVersions(activeCase.id).then((result) => {
+      if (result.data) setPlanningVersions(result.data);
+    });
+  }, [activeCase?.id, activeCase?.implantAssets, activeCase?.planningVersions]);
 
   useEffect(() => {
     const nextTranslation = existingPlan?.implantTransform?.translation || [0, 0, 0] as [number, number, number];
@@ -178,6 +199,16 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
         },
       } : {}),
       planningStatus: 'saved',
+      planName,
+      ...(spatialAnalysis ? {
+        analysis: {
+          ...spatialAnalysis,
+          patientModelId: patientModel.id,
+          patientModelVersion: patientModel.version || 1,
+          implantAssetId: implantAsset.id,
+          implantAssetVersion: implantAsset.version,
+        },
+      } : {}),
       procedureType,
       glenoidComponent: {
         system: 'Orthopedic Research Modular System (RMS)',
@@ -208,7 +239,59 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
     setSavedTransform({ translation, rotationDeg });
     setDirty(false);
     setStatus('Planning state saved.');
+    const refreshedVersions = await apiClient.listPlanningVersions(activeCase.id);
+    if (refreshedVersions.data) setPlanningVersions(refreshedVersions.data);
   };
+
+  const selectImplant = async (asset: ImplantAsset) => {
+    if (!activeCase) return;
+    const result = await apiClient.downloadImplant(activeCase.id, asset.id);
+    if (!result.data) {
+      setError(result.error || 'The selected implant could not be loaded.');
+      return;
+    }
+    setImplantAsset(asset);
+    setImplantBuffer(result.data);
+    setDirty(true);
+    setStatus(`${asset.displayName || asset.filename} selected. Geometry is not a clinical recommendation.`);
+  };
+
+  const loadVersion = async (version: PlanningVersion) => {
+    setSelectedVersionId(version.id);
+    setPlanName(version.name);
+    if (version.implantTransform) {
+      setTranslation(version.implantTransform.translation);
+      setRotationDeg(version.implantTransform.rotationDeg);
+    }
+    const asset = implantLibrary.find((item) => item.id === version.implantAssetId);
+    if (asset) await selectImplant(asset);
+    setStatus(`${version.name} loaded for review.`);
+  };
+
+  const duplicateSelectedVersion = async () => {
+    if (!activeCase || !selectedVersionId) return;
+    const result = await apiClient.duplicatePlanningVersion(activeCase.id, selectedVersionId);
+    if (result.data) {
+      setPlanningVersions((items) => [...items, result.data as PlanningVersion]);
+      setStatus(`${result.data.name} created.`);
+    } else setError(result.error || 'The planning version could not be duplicated.');
+  };
+
+  const deleteSelectedVersion = async () => {
+    if (!activeCase || !selectedVersionId) return;
+    const result = await apiClient.deletePlanningVersion(activeCase.id, selectedVersionId);
+    if (!result.data) {
+      setError(result.error || 'The planning version could not be deleted.');
+      return;
+    }
+    setPlanningVersions((items) => items.filter((item) => item.id !== selectedVersionId));
+    setSelectedVersionId(null);
+  };
+
+  const comparedVersion = planningVersions.find((version) => version.id === compareVersionId);
+  const transformDelta = comparedVersion?.implantTransform && translation
+    ? comparedVersion.implantTransform.translation.map((value, index) => translation[index] - value)
+    : null;
 
   const updateVector = (setter: React.Dispatch<React.SetStateAction<[number, number, number]>>, index: number, value: string) => {
     const parsed = Number(value);
@@ -457,7 +540,7 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
             </div>
             <input
               type="file"
-              accept=".stl,.obj,.ply"
+              accept=".stl,.obj,.ply,.glb"
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 if (file) void handleImplantImport(file);
@@ -467,6 +550,30 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
             />
             <div className="text-[11px] text-slate-500">
               Implant: {implantAsset ? `${implantAsset.filename} · ${implantAsset.unit}` : 'not loaded'}
+            </div>
+            <div className="space-y-1">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500">Implant library</div>
+              <select
+                value={implantAsset?.id || ''}
+                onChange={(event) => {
+                  const asset = implantLibrary.find((item) => item.id === event.target.value);
+                  if (asset) void selectImplant(asset);
+                }}
+                className="w-full rounded border px-2 py-1 text-xs"
+              >
+                <option value="">Select an imported implant</option>
+                {implantLibrary.map((asset) => (
+                  <option key={asset.id} value={asset.id}>
+                    {(asset.displayName || asset.filename)} · {asset.category || 'other'}{asset.isDemoAsset ? ' · DEMO' : ''}
+                  </option>
+                ))}
+              </select>
+              {implantAsset && (
+                <div className="text-[10px] text-slate-500">
+                  {implantAsset.isDemoAsset ? 'Generic demonstration geometry; not manufacturer-approved.' : 'Imported geometry; manufacturer specifications are not inferred.'}
+                  {implantAsset.metadata && ` · ${JSON.stringify(implantAsset.metadata)}`}
+                </div>
+              )}
             </div>
             <div className="flex gap-2 text-xs">
               <button type="button" onClick={() => setShowBone((value) => !value)} className="rounded border px-2 py-1">
@@ -500,6 +607,33 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
                         aria-label={`${label} ${['X', 'Y', 'Z'][index]}`}
                       />
                     ))}
+                  </div>
+
+                  <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+                    <span className="text-[11px] font-mono text-teal-700 dark:text-cyan-400 font-semibold uppercase block">Planning versions</span>
+                    <div className="flex gap-2">
+                      <input value={planName} onChange={(event) => setPlanName(event.target.value)} className="min-w-0 flex-1 rounded border px-2 py-1 text-xs" aria-label="Planning version name" />
+                      <select value={selectedVersionId || ''} onChange={(event) => {
+                        const version = planningVersions.find((item) => item.id === event.target.value);
+                        if (version) void loadVersion(version);
+                      }} className="rounded border px-2 py-1 text-xs">
+                        <option value="">Saved plans</option>
+                        {planningVersions.map((version) => <option key={version.id} value={version.id}>{version.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex gap-2">
+                      <button type="button" disabled={!selectedVersionId} onClick={() => void duplicateSelectedVersion()} className="rounded border px-2 py-1 text-xs disabled:opacity-40">Duplicate</button>
+                      <button type="button" disabled={!selectedVersionId} onClick={() => void deleteSelectedVersion()} className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 disabled:opacity-40">Delete</button>
+                    </div>
+                    <select value={compareVersionId || ''} onChange={(event) => setCompareVersionId(event.target.value || null)} className="w-full rounded border px-2 py-1 text-xs">
+                      <option value="">Compare selected plan with…</option>
+                      {planningVersions.filter((version) => version.id !== selectedVersionId).map((version) => <option key={version.id} value={version.id}>{version.name}</option>)}
+                    </select>
+                    {comparedVersion && transformDelta && (
+                      <div className="text-[11px] text-slate-600 dark:text-slate-400">
+                        Difference vs {comparedVersion.name}: translation Δ {transformDelta.map((value) => value.toFixed(2)).join(', ')}; rotation Δ {comparedVersion.implantTransform?.rotationDeg.map((value, index) => (rotationDeg[index] - value).toFixed(2)).join(', ') || 'n/a'}°.
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -813,8 +947,24 @@ export const ImplantPlanningView: React.FC<ImplantPlanningViewProps> = ({
               showBone={showBone}
               showImplant={showImplant}
               onImplantError={setError}
+              onSpatialAnalysis={(next) => setSpatialAnalysis(next)}
             />
           </div>
+          {spatialAnalysis && (
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 text-xs space-y-2">
+              <div className="font-semibold text-slate-900 dark:text-slate-100">Geometric bone–implant screening</div>
+              <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-600 dark:text-slate-400">
+                <div>Bone bounds: {spatialAnalysis.boneBounds.dimensions.map((value) => value.toFixed(2)).join(' × ')}</div>
+                <div>Implant bounds: {spatialAnalysis.implantBounds.dimensions.map((value) => value.toFixed(2)).join(' × ')}</div>
+              </div>
+              <div className={spatialAnalysis.intersects ? 'text-amber-700' : 'text-emerald-700'}>
+                {spatialAnalysis.intersects ? 'Bounding boxes intersect.' : 'No bounding-box intersection detected.'}
+                {spatialAnalysis.implantOutsideBone ? ' Implant is outside the selected bone region.' : ''}
+              </div>
+              <div className="text-[10px] text-slate-500">AABB screening uses current mesh geometry and patient-space transforms. It is not clinical fit validation or a surgical recommendation.</div>
+              {spatialAnalysis.warnings.map((warning) => <div key={warning} className="text-[11px] text-amber-700">{warning}</div>)}
+            </div>
+          )}
           {(error || status) && (
             <div className={`rounded border p-2 text-xs ${error ? 'border-rose-300 text-rose-700' : 'border-emerald-300 text-emerald-700'}`}>
               {error || status}

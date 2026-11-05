@@ -1,6 +1,7 @@
 import hashlib
 import os
 import uuid
+import struct
 from datetime import datetime, timezone
 import math
 from typing import Any, Dict, Optional, List
@@ -17,7 +18,7 @@ from ..storage import case_store
 
 router = APIRouter(prefix="/api", tags=["models"])
 MAX_MODEL_SIZE_BYTES = 100 * 1024 * 1024
-SUPPORTED_FORMATS = {"stl", "ply", "obj"}
+SUPPORTED_FORMATS = {"stl", "ply", "obj", "glb"}
 
 
 class ModelUploadResponse(BaseModel):
@@ -73,6 +74,8 @@ class ImplantPlanningPayload(BaseModel):
     notes: Optional[str] = None
     implantMeasurement: Optional[Dict[str, Any]] = None
     planningStatus: Optional[str] = None
+    planName: Optional[str] = None
+    analysis: Optional[Dict[str, Any]] = None
 
 
 class ImplantReferencePointPayload(BaseModel):
@@ -133,6 +136,110 @@ def _finite_transform(transform: Dict[str, Any]) -> Dict[str, Any]:
         "rotationDeg": rotation_values,
         "coordinateUnit": unit,
         "unitVerified": bool(transform.get("unitVerified", False)),
+    }
+
+
+def _mesh_bounds(content: bytes, extension: str) -> Optional[Dict[str, List[float]]]:
+    """Extract bounds from supported text/binary meshes without trusting metadata."""
+    points: List[List[float]] = []
+    if extension == "stl":
+        if len(content) >= 84:
+            count = struct.unpack_from("<I", content, 80)[0]
+            if 84 + count * 50 == len(content):
+                for offset in range(84, len(content), 50):
+                    for point_offset in (12, 24, 36):
+                        points.append(list(struct.unpack_from("<3f", content, offset + point_offset)))
+            else:
+                try:
+                    for line in content.decode("utf-8", errors="strict").splitlines():
+                        values = line.strip().split()
+                        if len(values) == 4 and values[0].lower() == "vertex":
+                            points.append([float(value) for value in values[1:]])
+                except (UnicodeDecodeError, ValueError):
+                    return None
+    elif extension == "obj":
+        try:
+            for line in content.decode("utf-8", errors="strict").splitlines():
+                values = line.strip().split()
+                if len(values) >= 4 and values[0] == "v":
+                    points.append([float(value) for value in values[1:4]])
+        except (UnicodeDecodeError, ValueError):
+            return None
+    if not points or any(len(point) != 3 or not all(math.isfinite(value) for value in point) for point in points):
+        return None
+    return {
+        "min": [min(point[index] for point in points) for index in range(3)],
+        "max": [max(point[index] for point in points) for index in range(3)],
+    }
+
+
+def _transform_bounds(bounds: Dict[str, List[float]], transform: Dict[str, Any]) -> Dict[str, List[float]]:
+    corners = [
+        [
+            bounds["min"][0] if mask & 1 == 0 else bounds["max"][0],
+            bounds["min"][1] if mask & 2 == 0 else bounds["max"][1],
+            bounds["min"][2] if mask & 4 == 0 else bounds["max"][2],
+        ]
+        for mask in range(8)
+    ]
+    transformed = [_transform_local_point(corner, transform) for corner in corners]
+    return {
+        "min": [min(point[index] for point in transformed) for index in range(3)],
+        "max": [max(point[index] for point in transformed) for index in range(3)],
+    }
+
+
+def _analysis_from_files(
+    bone_content: bytes,
+    bone_format: str,
+    implant_content: bytes,
+    implant_format: str,
+    transform: Dict[str, Any],
+    identifiers: Dict[str, Any],
+) -> Dict[str, Any]:
+    bone_bounds = _mesh_bounds(bone_content, bone_format)
+    implant_bounds = _mesh_bounds(implant_content, implant_format)
+    warnings: List[str] = []
+    if not bone_bounds or not implant_bounds:
+        if implant_format == "glb":
+            warnings.append("GLB geometry analysis requires client-side GLTF traversal; server bounds are unavailable.")
+        else:
+            warnings.append("The uploaded mesh has no readable vertex geometry.")
+        return {
+            **identifiers,
+            "status": "invalid_geometry",
+            "method": "axis_aligned_bounding_box",
+            "implantBounds": None,
+            "boneBounds": None,
+            "intersects": False,
+            "implantOutsideBone": True,
+            "warnings": warnings,
+            "computedAt": datetime.now(timezone.utc).isoformat(),
+        }
+    world_implant = _transform_bounds(implant_bounds, transform)
+    dimensions = lambda bounds: [bounds["max"][i] - bounds["min"][i] for i in range(3)]
+    intersects = all(
+        world_implant["min"][i] <= bone_bounds["max"][i] and world_implant["max"][i] >= bone_bounds["min"][i]
+        for i in range(3)
+    )
+    outside = any(
+        world_implant["max"][i] < bone_bounds["min"][i] or world_implant["min"][i] > bone_bounds["max"][i]
+        for i in range(3)
+    )
+    if intersects:
+        warnings.append("Bounding boxes overlap. This is a geometric screening result, not clinical fit validation.")
+    if outside:
+        warnings.append("The implant bounding box is outside the selected patient model region.")
+    return {
+        **identifiers,
+        "status": "current",
+        "method": "axis_aligned_bounding_box",
+        "implantBounds": {**world_implant, "dimensions": dimensions(world_implant)},
+        "boneBounds": {**bone_bounds, "dimensions": dimensions(bone_bounds)},
+        "intersects": intersects,
+        "implantOutsideBone": outside,
+        "warnings": warnings,
+        "computedAt": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -451,6 +558,8 @@ async def upload_case_implant(
             raise HTTPException(status_code=422, detail="Implant metadata must be valid JSON.") from error
     if supplied_metadata.get("unit", "unknown") not in {"unknown", "mm", "cm", "in"}:
         raise HTTPException(status_code=422, detail="Implant unit is invalid.")
+    if supplied_metadata.get("category", "other") not in {"glenoid", "baseplate", "glenosphere", "humeral_stem", "humeral_cup", "other"}:
+        raise HTTPException(status_code=422, detail="Implant category is invalid.")
     implant_id = str(uuid.uuid4())
     stored_name = f"{implant_id}.{extension}"
     storage_dir = os.path.join(settings.DATA_DIR, "implants", case_id)
@@ -467,12 +576,22 @@ async def upload_case_implant(
         "fileSizeBytes": len(content),
         "unit": supplied_metadata.get("unit", "unknown"),
         "unitVerified": bool(supplied_metadata.get("unitVerified", False)),
+        "displayName": supplied_metadata.get("displayName") or os.path.splitext(filename)[0],
+        "category": supplied_metadata.get("category", "other"),
+        "manufacturer": supplied_metadata.get("manufacturer"),
+        "metadata": supplied_metadata.get("metadata", {}),
         "uploadedAt": datetime.now(timezone.utc).isoformat(),
         "isDemoAsset": False,
     }
     if not case_store.update_case(case_id, {"implantAssets": [*case.implantAssets, implant]}):
         raise HTTPException(status_code=500, detail="The implant asset could not be saved.")
     return ImplantUploadResponse(implant=implant)
+
+
+@router.get("/cases/{case_id}/implants")
+async def list_case_implants(case_id: str, authorization: Optional[str] = Header(None)):
+    case = _case_for_user(case_id, authorization)
+    return case.implantAssets
 
 
 @router.get("/cases/{case_id}/implants/{implant_id}/file")
@@ -564,7 +683,76 @@ async def save_case_implant_planning(
         },
     ):
         raise HTTPException(status_code=500, detail="The implant planning state could not be saved.")
+    if payload.planName:
+        version = {
+            **plan,
+            "id": str(uuid.uuid4()),
+            "caseId": case_id,
+            "name": payload.planName.strip(),
+            "createdAt": plan["updatedAt"],
+        }
+        if not case_store.update_case(case_id, {"planningVersions": [*case.planningVersions, version]}):
+            raise HTTPException(status_code=500, detail="The planning version could not be saved.")
     return plan
+
+
+@router.get("/cases/{case_id}/planning-versions")
+async def list_planning_versions(case_id: str, authorization: Optional[str] = Header(None)):
+    case = _case_for_user(case_id, authorization)
+    return case.planningVersions
+
+
+@router.post("/cases/{case_id}/planning-versions/{version_id}/duplicate", status_code=status.HTTP_201_CREATED)
+async def duplicate_planning_version(case_id: str, version_id: str, authorization: Optional[str] = Header(None)):
+    case = _case_for_user(case_id, authorization, modify=True)
+    original = next((item for item in case.planningVersions if item.get("id") == version_id), None)
+    if not original:
+        raise HTTPException(status_code=404, detail="The planning version was not found.")
+    now = datetime.now(timezone.utc).isoformat()
+    duplicate = {**original, "id": str(uuid.uuid4()), "name": f"{original.get('name', 'Plan')} copy", "createdAt": now, "updatedAt": now}
+    if not case_store.update_case(case_id, {"planningVersions": [*case.planningVersions, duplicate]}):
+        raise HTTPException(status_code=500, detail="The planning version could not be duplicated.")
+    return duplicate
+
+
+@router.delete("/cases/{case_id}/planning-versions/{version_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_planning_version(case_id: str, version_id: str, authorization: Optional[str] = Header(None)):
+    case = _case_for_user(case_id, authorization, modify=True)
+    if not any(item.get("id") == version_id for item in case.planningVersions):
+        raise HTTPException(status_code=404, detail="The planning version was not found.")
+    if not case_store.update_case(case_id, {"planningVersions": [item for item in case.planningVersions if item.get("id") != version_id]}):
+        raise HTTPException(status_code=500, detail="The planning version could not be deleted.")
+
+
+@router.post("/cases/{case_id}/implant-analysis")
+async def analyze_implant_geometry(
+    case_id: str,
+    payload: ImplantPlanningPayload,
+    authorization: Optional[str] = Header(None),
+):
+    case = _case_for_user(case_id, authorization)
+    model = _model_for_case(case, payload.patientModelId)
+    implant = _implant_for_case(case, payload.implantAssetId)
+    if payload.patientModelVersion != int(model.get("version", 1)) or payload.implantAssetVersion != int(implant.get("version", 1)):
+        raise HTTPException(status_code=409, detail="The analysis references an outdated model or implant version.")
+    model_path = os.path.join(settings.DATA_DIR, "models", case_id, os.path.basename(str(model.get("storageName", ""))))
+    implant_path = os.path.join(settings.DATA_DIR, "implants", case_id, os.path.basename(str(implant.get("storageName", ""))))
+    if not os.path.isfile(model_path) or not os.path.isfile(implant_path):
+        raise HTTPException(status_code=404, detail="The referenced geometry file is unavailable.")
+    transform = _finite_transform(payload.implantTransform)
+    return _analysis_from_files(
+        open(model_path, "rb").read(),
+        str(model.get("format", "")).lower(),
+        open(implant_path, "rb").read(),
+        str(implant.get("format", "")).lower(),
+        transform,
+        {
+            "patientModelId": payload.patientModelId,
+            "patientModelVersion": payload.patientModelVersion,
+            "implantAssetId": payload.implantAssetId,
+            "implantAssetVersion": payload.implantAssetVersion,
+        },
+    )
 
 
 def _implant_reference_point_for_case(case: ResearchCase, point_id: str) -> Dict[str, Any]:

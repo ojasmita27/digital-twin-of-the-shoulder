@@ -132,6 +132,8 @@ export interface ImplantPlanningConfig {
     unitVerified: boolean;
   };
   planningStatus?: 'unsaved' | 'saved' | 'stale';
+  planName?: string;
+  analysis?: ImplantSpatialAnalysis;
   implantMeasurement?: {
     landmarkId: string;
     reference: 'implant_origin';
@@ -160,6 +162,31 @@ export interface ImplantPlanningConfig {
   planningApprovedBy?: string;
 }
 
+export interface PlanningVersion extends ImplantPlanningConfig {
+  id: string;
+  name: string;
+  caseId: string;
+  createdAt: string;
+  updatedAt: string;
+  analysis?: ImplantSpatialAnalysis;
+}
+
+export interface ImplantSpatialAnalysis {
+  status: 'current' | 'invalid_geometry' | 'model_outdated';
+  method: 'axis_aligned_bounding_box';
+  implantBounds: { min: [number, number, number]; max: [number, number, number]; dimensions: [number, number, number] };
+  boneBounds: { min: [number, number, number]; max: [number, number, number]; dimensions: [number, number, number] };
+  intersects: boolean;
+  implantOutsideBone: boolean;
+  minimumAxisGap?: number;
+  warnings: string[];
+  patientModelId: string;
+  patientModelVersion: number;
+  implantAssetId: string;
+  implantAssetVersion: number;
+  computedAt: string;
+}
+
 export interface ImplantReferencePoint {
   id: string;
   caseId: string;
@@ -177,7 +204,7 @@ export interface ImplantAsset {
   id: string;
   caseId: string;
   filename: string;
-  format: 'stl' | 'obj' | 'ply';
+  format: 'stl' | 'obj' | 'ply' | 'glb';
   storageName: string;
   version: number;
   fileSizeBytes: number;
@@ -185,6 +212,10 @@ export interface ImplantAsset {
   unitVerified: boolean;
   uploadedAt: string;
   isDemoAsset: boolean;
+  category?: 'glenoid' | 'baseplate' | 'glenosphere' | 'humeral_stem' | 'humeral_cup' | 'other';
+  displayName?: string;
+  manufacturer?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface SegmentationJob {
@@ -273,6 +304,7 @@ export interface ResearchCase {
   landmarks: AnatomicalLandmark[];
   measurements?: MorphometricMeasurements;
   implantPlan?: ImplantPlanningConfig;
+  planningVersions?: PlanningVersion[];
   implantAssets?: ImplantAsset[];
   implantReferencePoints?: ImplantReferencePoint[];
   planningMeasurements?: PlanningMeasurement[];
