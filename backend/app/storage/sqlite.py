@@ -203,8 +203,45 @@ class SqliteCaseStore:
 
             conn.commit()
 
-        # Seed initial default users if none exist
+        # Seed initial default users if none exist (development only)
         self._seed_default_users()
+        # Bootstrap first production admin if users table is empty and env vars are provided
+        self._bootstrap_initial_admin()
+
+    def _bootstrap_initial_admin(self) -> None:
+        """Create the first admin account if the users table is empty and INITIAL_ADMIN_EMAIL/PASSWORD are set."""
+        admin_email = os.getenv("INITIAL_ADMIN_EMAIL", "").strip().lower()
+        admin_password = os.getenv("INITIAL_ADMIN_PASSWORD", "")
+        if not admin_email or not admin_password:
+            return
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            if int(cursor.fetchone()[0]) > 0:
+                return
+            hashed, salt = hash_password(admin_password)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cursor.execute(
+                """
+                INSERT INTO users (
+                    id, email, hashed_password, salt, full_name, role,
+                    title, specialty, organization, is_active, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    admin_email,
+                    hashed,
+                    salt,
+                    os.getenv("INITIAL_ADMIN_NAME", "Systems Administrator"),
+                    UserRole.ADMIN.value,
+                    "Lead Administrator",
+                    "Medical Imaging Infrastructure",
+                    "ShoulderTwin",
+                    now_iso,
+                ),
+            )
+            conn.commit()
 
     def _seed_default_users(self) -> None:
         """Seed initial real accounts for Doctor, Researcher, and Administrator in development mode."""
@@ -323,18 +360,40 @@ class SqliteCaseStore:
                 for row in rows
             ]
 
+    def close(self) -> None:
+        """No-op connection close for interface parity with PostgresCaseStore."""
+        pass
+
     def create_user(
         self,
-        email: str,
-        password: str,
-        full_name: str,
-        role: UserRole,
+        email: Any,
+        password: Optional[str] = None,
+        full_name: Optional[str] = None,
+        role: Optional[UserRole] = None,
         title: Optional[str] = None,
         specialty: Optional[str] = None,
         organization: Optional[str] = None,
     ) -> UserProfile:
+        if hasattr(email, "email") and hasattr(email, "password"):
+            req = email
+            email_val = req.email.strip().lower()
+            password_val = req.password
+            full_name_val = getattr(req, "fullName", getattr(req, "full_name", "")).strip()
+            role_val = req.role.value if hasattr(req.role, "value") else str(req.role)
+            title_val = getattr(req, "title", None)
+            specialty_val = getattr(req, "specialty", None)
+            org_val = getattr(req, "organization", None)
+        else:
+            email_val = str(email).strip().lower()
+            password_val = password or ""
+            full_name_val = full_name.strip() if full_name else ""
+            role_val = role.value if hasattr(role, "value") else str(role)
+            title_val = title
+            specialty_val = specialty
+            org_val = organization
+
         user_id = f"usr-{uuid.uuid4().hex[:8]}"
-        hashed_pw, salt = hash_password(password)
+        hashed_pw, salt = hash_password(password_val)
         now_iso = datetime.now(timezone.utc).isoformat()
 
         with self._get_connection() as conn:
@@ -348,14 +407,14 @@ class SqliteCaseStore:
                 """,
                 (
                     user_id,
-                    email.strip().lower(),
+                    email_val,
                     hashed_pw,
                     salt,
-                    full_name.strip(),
-                    role.value,
-                    title,
-                    specialty,
-                    organization,
+                    full_name_val,
+                    role_val,
+                    title_val,
+                    specialty_val,
+                    org_val,
                     now_iso,
                     now_iso,
                 ),

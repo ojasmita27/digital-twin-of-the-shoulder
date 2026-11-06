@@ -21,8 +21,8 @@ function resolveDefaultBaseUrl(): string {
     return envUrl.trim();
   }
 
-  // 2. Default to local FastAPI backend
-  return LOCAL_FASTAPI_BACKEND;
+  // 2. Use deployed backend in hosted preview, or local FastAPI on localhost
+  return isHostedPreview() ? PRODUCTION_RENDER_BACKEND : LOCAL_FASTAPI_BACKEND;
 }
 
 const DEFAULT_CONFIG: BackendConfig = {
@@ -52,6 +52,9 @@ export function getBackendConfig(): BackendConfig {
         parsed.baseUrl.startsWith('http://localhost') ||
         parsed.baseUrl.startsWith('http://127.0.0.1')
       )) {
+        parsed.baseUrl = resolveDefaultBaseUrl();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+      } else if (!isHostedPreview() && parsed.baseUrl === PRODUCTION_RENDER_BACKEND) {
         parsed.baseUrl = resolveDefaultBaseUrl();
         localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
       }

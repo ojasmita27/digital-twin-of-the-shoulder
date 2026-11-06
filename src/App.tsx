@@ -167,6 +167,25 @@ export default function App() {
     }
   };
 
+  const handleUpdateCaseMetadata = async (
+    caseId: string,
+    updates: {
+      name?: string;
+      demographics?: ResearchCase['demographics'];
+    },
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const res = await apiClient.updateCase(caseId, updates);
+    if (res.error || !res.data) {
+      const msg = res.error || 'Failed to update case metadata.';
+      addNotification('warning', 'Case Update Failed', msg, 'FastAPI Backend');
+      return { ok: false, error: msg };
+    }
+    caseStorage.updateCase(caseId, res.data);
+    addNotification('info', 'Case Updated', `Saved metadata changes for ${caseId}.`, 'FastAPI Backend');
+    await fetchCases();
+    return { ok: true };
+  };
+
   const handleResetDemo = () => {
     caseStorage.resetToDemo();
     addNotification('info', 'Demo Baseline Restored', 'Re-initialized standard synthetic shoulder model.', 'Storage');
@@ -242,6 +261,7 @@ export default function App() {
               onNavigate={setCurrentRoute}
               onOpenCreateModal={() => setCreateModalOpen(true)}
               onDeleteCase={handleDeleteCase}
+              onUpdateCase={handleUpdateCaseMetadata}
               isLoading={isLoadingCases}
               backendError={backendError}
               onRefresh={fetchCases}

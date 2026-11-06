@@ -34,6 +34,13 @@ interface CasesViewProps {
   onNavigate: (route: NavRoute) => void;
   onOpenCreateModal: () => void;
   onDeleteCase: (caseId: string) => void;
+  onUpdateCase?: (
+    caseId: string,
+    updates: {
+      name?: string;
+      demographics?: ResearchCase['demographics'];
+    },
+  ) => Promise<{ ok: boolean; error?: string }>;
   isLoading?: boolean;
   backendError?: string | null;
   onRefresh?: () => void;
@@ -46,6 +53,7 @@ export const CasesView: React.FC<CasesViewProps> = ({
   onNavigate,
   onOpenCreateModal,
   onDeleteCase,
+  onUpdateCase,
   isLoading = false,
   backendError = null,
   onRefresh,
@@ -53,6 +61,13 @@ export const CasesView: React.FC<CasesViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [filterIndication, setFilterIndication] = useState<string>('all');
   const [filterSide, setFilterSide] = useState<string>('all');
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editIndication, setEditIndication] = useState<ResearchCase['demographics']['indication']>('Primary Osteoarthritis');
+  const [editSide, setEditSide] = useState<'left' | 'right'>('right');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editFeedback, setEditFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const filteredCases = cases.filter((c) => {
     const matchesSearch =
@@ -398,22 +413,142 @@ export const CasesView: React.FC<CasesViewProps> = ({
                   );
                 })()}
 
-                <div className="grid grid-cols-2 gap-2">
+                {editFeedback && (
+                  <div
+                    className={`text-[11px] px-2.5 py-1.5 rounded ${
+                      editFeedback.type === 'success'
+                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                        : 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'
+                    }`}
+                  >
+                    {editFeedback.message}
+                  </div>
+                )}
+
+                {isEditing && onUpdateCase && !activeCase.isDemo && (
+                  <div className="p-3 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-2 text-xs">
+                    <div className="font-semibold text-slate-800 dark:text-slate-200">Edit Case Metadata</div>
+                    <input
+                      type="text"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      placeholder="Case Name"
+                      className="w-full px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <select
+                        value={editIndication}
+                        onChange={(e) => setEditIndication(e.target.value as ResearchCase['demographics']['indication'])}
+                        className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                      >
+                        <option value="Primary Osteoarthritis">Primary Osteoarthritis</option>
+                        <option value="Rotator Cuff Tear Arthropathy">Rotator Cuff Tear Arthropathy</option>
+                        <option value="Proximal Humerus Fracture">Proximal Humerus Fracture</option>
+                        <option value="Avascular Necrosis">Avascular Necrosis</option>
+                        <option value="Revision Arthroplasty">Revision Arthroplasty</option>
+                        <option value="Research Normative">Research Normative</option>
+                      </select>
+                      <select
+                        value={editSide}
+                        onChange={(e) => setEditSide(e.target.value as 'left' | 'right')}
+                        className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                      >
+                        <option value="right">Right</option>
+                        <option value="left">Left</option>
+                      </select>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={savingEdit || !editName.trim()}
+                        onClick={async () => {
+                          setSavingEdit(true);
+                          setEditFeedback(null);
+                          const res = await onUpdateCase(activeCase.id, {
+                            name: editName.trim(),
+                            demographics: {
+                              ...activeCase.demographics,
+                              indication: editIndication,
+                              affectedSide: editSide,
+                            },
+                          });
+                          setSavingEdit(false);
+                          if (res.ok) {
+                            setIsEditing(false);
+                            setEditFeedback({ type: 'success', message: 'Case metadata saved.' });
+                          } else {
+                            setEditFeedback({ type: 'error', message: res.error || 'Update failed.' });
+                          }
+                        }}
+                        className="px-2.5 py-1 rounded bg-teal-600 text-white font-semibold disabled:opacity-50"
+                      >
+                        {savingEdit ? 'Saving...' : 'Save'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditing(false)}
+                        className="px-2.5 py-1 rounded bg-slate-200 dark:bg-slate-800"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-3 gap-2">
                   <button
                     onClick={() => exportCaseJSON(activeCase)}
-                    className="py-1.5 px-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs rounded-md border border-slate-200 dark:border-slate-700 transition-colors flex items-center justify-center gap-1.5"
+                    className="py-1.5 px-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs rounded-md border border-slate-200 dark:border-slate-700 transition-colors flex items-center justify-center gap-1"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>Export JSON</span>
+                    <span>JSON</span>
                   </button>
 
-                  <button
-                    onClick={() => onDeleteCase(activeCase.id)}
-                    className="py-1.5 px-3 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-950/60 text-rose-700 dark:text-rose-300 text-xs rounded-md border border-rose-200 dark:border-rose-900/50 transition-colors flex items-center justify-center gap-1.5"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Delete</span>
-                  </button>
+                  {onUpdateCase && !activeCase.isDemo && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditName(activeCase.name);
+                        setEditIndication(activeCase.demographics.indication);
+                        setEditSide(activeCase.demographics.affectedSide);
+                        setEditFeedback(null);
+                        setIsEditing((v) => !v);
+                      }}
+                      className="py-1.5 px-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs rounded-md border border-slate-200 dark:border-slate-700 transition-colors"
+                    >
+                      Edit
+                    </button>
+                  )}
+
+                  {confirmDeleteId === activeCase.id ? (
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmDeleteId(null);
+                          onDeleteCase(activeCase.id);
+                        }}
+                        className="flex-1 py-1.5 px-2 bg-rose-600 text-white text-[11px] font-semibold rounded-md"
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="py-1.5 px-2 bg-slate-200 dark:bg-slate-800 text-[11px] rounded-md"
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmDeleteId(activeCase.id)}
+                      className="py-1.5 px-2 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-950/60 text-rose-700 dark:text-rose-300 text-xs rounded-md border border-rose-200 dark:border-rose-900/50 transition-colors flex items-center justify-center gap-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

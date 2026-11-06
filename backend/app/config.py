@@ -10,6 +10,7 @@ class Settings:
     PORT: int = int(os.getenv("PORT", "8001"))
     DATA_DIR: str = os.getenv("DATA_DIR", os.path.join(os.getcwd(), "data"))
     DATABASE_PATH: str = os.getenv("DATABASE_PATH", os.path.join(os.getcwd(), "data", "shoulder_twin.db"))
+    DATABASE_URL: str | None = os.getenv("DATABASE_URL")
     
     # OWASP PBKDF2-HMAC-SHA256 iterations (default: 600,000)
     PBKDF2_ITERATIONS: int = int(os.getenv("PBKDF2_ITERATIONS", "600000"))

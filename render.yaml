@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: digital-twin-of-the-shoulder
+    runtime: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    disk:
+      name: shouldertwin-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: ALLOW_DEV_SEEDING
+        value: "false"
+      - key: REQUIRE_PRODUCTION_CONFIG
+        value: "true"
+      - key: DATA_DIR
+        value: /var/data
+      - key: DATABASE_PATH
+        value: /var/data/shoulder_twin.db

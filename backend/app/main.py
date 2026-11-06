@@ -10,7 +10,11 @@ from .storage import case_store
 async def lifespan(app: FastAPI):
     validate_startup_configuration()
     case_store._init_db()
-    yield
+    try:
+        yield
+    finally:
+        if hasattr(case_store, "close"):
+            case_store.close()
 
 
 app = FastAPI(
