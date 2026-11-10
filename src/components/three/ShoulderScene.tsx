@@ -90,13 +90,17 @@ interface ShoulderSceneProps {
   scapulaVisible?: boolean;
   humerusVisible?: boolean;
   showLandmarks?: boolean;
-  onVisibilityChange?: (visibility: { scapulaVisible: boolean; humerusVisible: boolean; landmarksVisible: boolean }) => void;
+  onVisibilityChange?: (visibility: { scapulaVisible: boolean; humerusVisible: boolean; glenoidVisible?: boolean; landmarksVisible: boolean }) => void;
   scapulaBuffer?: ArrayBuffer | null;
   humerusBuffer?: ArrayBuffer | null;
+  glenoidBuffer?: ArrayBuffer | null;
   scapulaColor?: string;
   humerusColor?: string;
+  glenoidColor?: string;
   scapulaOpacity?: number;
   humerusOpacity?: number;
+  glenoidOpacity?: number;
+  glenoidVisible?: boolean;
 }
 
 export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
@@ -140,10 +144,14 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   onVisibilityChange,
   scapulaBuffer = null,
   humerusBuffer = null,
+  glenoidBuffer = null,
   scapulaColor = '#e8dec8',
   humerusColor = '#cbd5e1',
+  glenoidColor = '#67e8f9',
   scapulaOpacity = 1.0,
   humerusOpacity = 1.0,
+  glenoidOpacity = 0.9,
+  glenoidVisible: glenoidVisibleProp,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -158,6 +166,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const customMeshRef = useRef<THREE.Mesh | null>(null);
   const scapulaMeshRef = useRef<THREE.Mesh | null>(null);
   const humerusMeshRef = useRef<THREE.Mesh | null>(null);
+  const glenoidMeshRef = useRef<THREE.Mesh | null>(null);
   const implantMeshRef = useRef<THREE.Object3D | null>(null);
   const measurementGroupRef = useRef<THREE.Group | null>(null);
   const landmarksManagerRef = useRef<LandmarkMarkersManager | null>(null);
@@ -176,6 +185,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const [shadingMode, setShadingMode] = useState<ShadingMode>('bone_ivory');
   const [scapulaVisible, setScapulaVisible] = useState(true);
   const [humerusVisible, setHumerusVisible] = useState(true);
+  const [glenoidVisible, setGlenoidVisible] = useState(true);
   const [cartilageVisible, setCartilageVisible] = useState(true);
   const [showLandmarks, setShowLandmarks] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
@@ -192,6 +202,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const [unitScale, setUnitScale] = useState<UnitScale>(unitScaleProp || 'unknown');
   const resolvedScapulaVisible = scapulaVisibleProp ?? scapulaVisible;
   const resolvedHumerusVisible = humerusVisibleProp ?? humerusVisible;
+  const resolvedGlenoidVisible = glenoidVisibleProp ?? glenoidVisible;
   const resolvedShowLandmarks = showLandmarksProp ?? showLandmarks;
   const measureModeRef = useRef(false);
   const landmarkModeRef = useRef(landmarkMode);
@@ -614,6 +625,43 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   }, [humerusBuffer]);
 
   useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    if (glenoidMeshRef.current) {
+      scene.remove(glenoidMeshRef.current);
+      glenoidMeshRef.current.geometry.dispose();
+      (glenoidMeshRef.current.material as THREE.Material).dispose();
+      glenoidMeshRef.current = null;
+    }
+    if (!glenoidBuffer) return;
+    try {
+      const meshInfo = parseModelArrayBuffer(glenoidBuffer, 'glenoid.stl');
+      const mesh = new THREE.Mesh(
+        meshInfo.geometry,
+        new THREE.MeshStandardMaterial({
+          color: glenoidColor,
+          roughness: 0.58,
+          metalness: 0.05,
+          transparent: glenoidOpacity < 1.0,
+          opacity: glenoidOpacity,
+          side: THREE.DoubleSide,
+        }),
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.visible = resolvedGlenoidVisible;
+      scene.add(mesh);
+      glenoidMeshRef.current = mesh;
+      if (modelRef.current) modelRef.current.group.visible = false;
+      fitObjectToView(mesh);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The glenoid STL file could not be parsed.';
+      setCustomMeshError(message);
+      onMeshError?.(message);
+    }
+  }, [glenoidBuffer]);
+
+  useEffect(() => {
     if (scapulaMeshRef.current) {
       const mat = scapulaMeshRef.current.material as THREE.MeshStandardMaterial;
       mat.color.set(scapulaColor);
@@ -628,7 +676,14 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       mat.opacity = humerusOpacity;
       mat.needsUpdate = true;
     }
-  }, [scapulaColor, scapulaOpacity, humerusColor, humerusOpacity]);
+    if (glenoidMeshRef.current) {
+      const mat = glenoidMeshRef.current.material as THREE.MeshStandardMaterial;
+      mat.color.set(glenoidColor);
+      mat.transparent = glenoidOpacity < 1.0;
+      mat.opacity = glenoidOpacity;
+      mat.needsUpdate = true;
+    }
+  }, [scapulaColor, scapulaOpacity, humerusColor, humerusOpacity, glenoidColor, glenoidOpacity]);
 
   useEffect(() => {
     if (!implantBuffer || !sceneRef.current) return;
@@ -831,7 +886,10 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     if (humerusMeshRef.current) {
       humerusMeshRef.current.visible = resolvedHumerusVisible;
     }
-  }, [resolvedScapulaVisible, resolvedHumerusVisible, cartilageVisible]);
+    if (glenoidMeshRef.current) {
+      glenoidMeshRef.current.visible = resolvedGlenoidVisible;
+    }
+  }, [resolvedScapulaVisible, resolvedHumerusVisible, resolvedGlenoidVisible, cartilageVisible]);
 
   // Update Helpers
   useEffect(() => {

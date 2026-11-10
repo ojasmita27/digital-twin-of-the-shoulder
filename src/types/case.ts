@@ -30,6 +30,12 @@ export interface CTSliceMetadata {
   seriesInstanceUid: string;
   studyInstanceUid: string;
   sliceThicknessMm: number;
+  sliceSpacingMm?: number;
+  zCoverageMm?: number;
+  volumeDimensionsMm?: [number, number, number];
+  duplicateCount?: number;
+  hasGaps?: boolean;
+  gapWarnings?: string[];
   pixelSpacingMm: [number, number];
   rows: number;
   columns: number;
@@ -224,7 +230,7 @@ export interface SegmentationJob {
   status: 'not_configured' | 'ready' | 'queued' | 'processing' | 'completed' | 'failed';
   modelName: string;
   modelVersion: string;
-  targetStructures: ('scapula' | 'humerus' | 'clavicle')[];
+  targetStructures: ('scapula' | 'humerus' | 'glenoid' | 'clavicle')[];
   createdAt: string;
   completedAt?: string;
   progressPercent: number;
@@ -250,13 +256,18 @@ export interface SegmentationJob {
   overlapVoxelCount?: number;
   scapulaVoxelCount?: number;
   humerusVoxelCount?: number;
+  glenoidVoxelCount?: number;
   scapulaVolumeMm3?: number;
   humerusVolumeMm3?: number;
+  glenoidVolumeMm3?: number;
+  glenoidStatus?: 'not_requested' | 'manual_review_required';
+  glenoidConfidence?: number | null;
+  glenoidNotes?: string | null;
 }
 
 export interface MeshArtifact {
   id: string;
-  structure: 'combined' | 'scapula' | 'humerus' | 'clavicle' | 'implant_glenoid' | 'implant_humerus';
+  structure: 'combined' | 'scapula' | 'humerus' | 'glenoid' | 'clavicle' | 'implant_glenoid' | 'implant_humerus';
   filename: string;
   format: 'stl' | 'obj' | 'ply' | 'vtk';
   vertexCount: number;
@@ -282,6 +293,7 @@ export interface MeshArtifact {
 export interface ViewerPreferences {
   scapulaVisible: boolean;
   humerusVisible: boolean;
+  glenoidVisible?: boolean;
   landmarksVisible: boolean;
   selectedModelId?: string;
   selectedSliceIndex?: number;

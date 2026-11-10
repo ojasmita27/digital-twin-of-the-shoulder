@@ -606,7 +606,7 @@ export class ApiClient {
     sliceIndex: number,
     windowCenter?: number,
     windowWidth?: number,
-    structure?: 'combined' | 'scapula' | 'humerus',
+    structure?: 'combined' | 'scapula' | 'humerus' | 'glenoid',
   ): Promise<ApiCallResult<{
     ctPreviewUrl: string;
     maskPreviewUrl?: string | null;
@@ -627,7 +627,7 @@ export class ApiClient {
     caseId: string,
     sliceIndex: number,
     operations: Array<{ x: number; y: number; radius: number; add: boolean }>,
-    structure?: 'combined' | 'scapula' | 'humerus',
+    structure?: 'combined' | 'scapula' | 'humerus' | 'glenoid',
   ): Promise<ApiCallResult<Record<string, unknown>>> {
     return this.request<Record<string, unknown>>(
       `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation/corrections`,

@@ -275,10 +275,15 @@ def analyze_dicom_series(
     # 1. Series uniformity validation
     series_map: Dict[str, List[Tuple[Dict[str, Any], Optional[str]]]] = {}
     for meta, preview in parsed_slices:
-        uid = meta.get("seriesInstanceUid") or "UNKNOWN_SERIES"
+        uid = meta.get("seriesInstanceUid")
+        if not uid:
+            raise DicomValidationError(
+                f"Slice '{meta.get('filename', 'unknown')}' is missing SeriesInstanceUID; "
+                "series identity is required for patient-specific reconstruction."
+            )
         series_map.setdefault(uid, []).append((meta, preview))
 
-    if len(series_map) > 1 and "UNKNOWN_SERIES" not in series_map:
+    if len(series_map) > 1:
         keys_summary = ", ".join(list(series_map.keys())[:3])
         raise DicomValidationError(
             f"Uploaded files belong to {len(series_map)} distinct SeriesInstanceUIDs ({keys_summary}). "
@@ -287,11 +292,21 @@ def analyze_dicom_series(
 
     # 2. Modality consistency validation
     modalities = {meta.get("modality", "").upper() for meta, _ in parsed_slices}
-    if any(m not in ("CT", "OCT", "PT") and not m.startswith("CT") for m in modalities if m):
-        invalid_mods = ", ".join(m for m in modalities if m not in ("CT", "OCT", "PT") and not m.startswith("CT"))
+    if modalities != {"CT"}:
+        invalid_mods = ", ".join(sorted(modalities - {"CT"})) or "missing modality"
         raise DicomValidationError(
             f"Incompatible modality detected: {invalid_mods}. Only axial CT acquisition series are supported "
             f"for glenohumeral 3D digital twin reconstruction."
+        )
+
+    study_uids = {meta.get("studyInstanceUid") for meta, _ in parsed_slices}
+    if not study_uids or None in study_uids or "" in study_uids:
+        raise DicomValidationError(
+            "The series is missing StudyInstanceUID on one or more slices."
+        )
+    if len(study_uids) > 1:
+        raise DicomValidationError(
+            "Uploaded files belong to multiple StudyInstanceUIDs; all slices must come from one CT study."
         )
 
     # 3. Deduplication by SOPInstanceUID
@@ -300,6 +315,10 @@ def analyze_dicom_series(
     duplicate_count = 0
 
     for meta, preview in parsed_slices:
+        if not meta.get("hasPixelData"):
+            raise DicomValidationError(
+                f"Slice '{meta.get('filename', 'unknown')}' has no readable PixelData."
+            )
         sop_uid = meta.get("sopInstanceUid")
         if sop_uid and sop_uid in seen_sops:
             duplicate_count += 1
@@ -333,8 +352,20 @@ def analyze_dicom_series(
             "The series is missing ImageOrientationPatient on one or more slices; "
             "physical orientation cannot be established."
         )
-    first_orientation = orientations[0]
-    if any(orientation != first_orientation for orientation in orientations[1:]):
+    first_orientation = np.asarray(orientations[0], dtype=np.float64) if IMAGING_AVAILABLE else orientations[0]
+    if IMAGING_AVAILABLE:
+        row = first_orientation[:3]
+        column = first_orientation[3:]
+        if not math.isclose(float(np.linalg.norm(row)), 1.0, abs_tol=1e-3) or not math.isclose(
+            float(np.linalg.norm(column)), 1.0, abs_tol=1e-3
+        ) or not math.isclose(float(np.dot(row, column)), 0.0, abs_tol=1e-3):
+            raise DicomValidationError("The uploaded series has non-orthonormal image orientation vectors.")
+    if any(
+        not np.allclose(np.asarray(orientation, dtype=np.float64), first_orientation, atol=1e-4)
+        if IMAGING_AVAILABLE
+        else orientation != tuple(first_orientation)
+        for orientation in orientations[1:]
+    ):
         raise DicomValidationError("The uploaded series has inconsistent image orientation vectors.")
 
     spacings = [
@@ -663,7 +694,13 @@ def separate_shoulder_bones(
         ) from exc
 
     spacing = [float(s) for s in analysis.get("spacingMm", [1.0, 1.0, 1.0])]
-    orientation = np.asarray(analysis.get("orientation", [1, 0, 0, 0, 1, 0]), dtype=np.float64)
+    orientation_values = analysis.get("orientation")
+    if orientation_values is None:
+        orientation_values = [
+            *analysis.get("columnDirection", [0, 1, 0]),
+            *analysis.get("rowDirection", [1, 0, 0]),
+        ]
+    orientation = np.asarray(orientation_values, dtype=np.float64)
     row_dir = orientation[:3]
     col_dir = orientation[3:]
     norm_dir = np.cross(row_dir, col_dir)
@@ -812,6 +849,82 @@ def separate_shoulder_bones(
             "overlapVoxelCount": 0,
         },
     )
+
+
+def derive_glenoid_region(
+    scapula_mask: Any,
+    humerus_mask: Optional[Any],
+    analysis: Dict[str, Any],
+) -> Tuple[Optional[Any], Dict[str, Any]]:
+    """Derive a review-required glenoid-facing scapular region from CT masks."""
+    if not IMAGING_AVAILABLE or scapula_mask is None or not bool(scapula_mask.any()):
+        return None, {
+            "status": "manual_review_required",
+            "confidence": 0.0,
+            "notes": "A non-empty scapula mask is required.",
+        }
+
+    spacing = np.asarray(analysis.get("spacingMm", [1.0, 1.0, 1.0]), dtype=np.float64)
+    orientation_values = analysis.get("orientation")
+    if orientation_values is None:
+        orientation_values = [
+            *analysis.get("rowDirection", [1, 0, 0]),
+            *analysis.get("columnDirection", [0, 1, 0]),
+        ]
+    orientation = np.asarray(orientation_values, dtype=np.float64)
+    if orientation.size != 6:
+        return None, {
+            "status": "manual_review_required",
+            "confidence": 0.0,
+            "notes": "Patient orientation is unavailable for glenoid region derivation.",
+        }
+    row_dir = orientation[:3]
+    col_dir = orientation[3:]
+    normal_dir = np.cross(row_dir, col_dir)
+    origin = np.asarray(analysis.get("originMm", [0.0, 0.0, 0.0]), dtype=np.float64)
+    transform = np.column_stack((normal_dir, row_dir, col_dir))
+
+    scapula_voxels = np.argwhere(scapula_mask.astype(bool))
+    scapula_lps = origin + (scapula_voxels * spacing) @ transform.T
+    scapula_center = scapula_lps.mean(axis=0)
+    if humerus_mask is not None and bool(humerus_mask.any()):
+        humerus_voxels = np.argwhere(humerus_mask.astype(bool))
+        humerus_center = (origin + (humerus_voxels * spacing) @ transform.T).mean(axis=0)
+        facing_direction = humerus_center - scapula_center
+        direction_norm = np.linalg.norm(facing_direction)
+        if direction_norm <= 1e-6:
+            return None, {
+                "status": "manual_review_required",
+                "confidence": 0.0,
+                "notes": "Scapula and humerus centers do not define a glenoid-facing direction.",
+            }
+        facing_direction /= direction_norm
+    else:
+        return None, {
+            "status": "manual_review_required",
+            "confidence": 0.0,
+            "notes": "A humerus mask is required to orient the glenoid-facing region.",
+        }
+
+    projections = (scapula_lps - scapula_center) @ facing_direction
+    cutoff = float(np.percentile(projections, 85))
+    selected = projections >= cutoff
+    if int(selected.sum()) < 10:
+        return None, {
+            "status": "manual_review_required",
+            "confidence": 0.0,
+            "notes": "The glenoid-facing region contains too few voxels for a reviewable mask.",
+        }
+    region = np.zeros_like(scapula_mask, dtype=bool)
+    region[tuple(scapula_voxels[selected].T)] = True
+    return region, {
+        "status": "manual_review_required",
+        "confidence": 0.5,
+        "notes": (
+            "Glenoid region is a CT-derived glenoid-facing scapular subregion selected by "
+            "patient-space geometry; manual review is required and no trained model is claimed."
+        ),
+    }
 
 
 def compute_bone_quality_metrics(
@@ -989,6 +1102,3 @@ def detect_shoulder_landmarks(
             "all detected landmarks require clinician review and manual adjustment."
         ),
     }
-
-
-

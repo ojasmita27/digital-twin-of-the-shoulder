@@ -26,6 +26,7 @@ from ..services.dicom_service import (
     extract_patient_space_mesh_from_mask,
     render_plane_preview_base64,
     separate_shoulder_bones,
+    derive_glenoid_region,
 )
 from ..config import settings
 
@@ -34,7 +35,7 @@ router = APIRouter(prefix="/api", tags=["imaging"])
 
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB per file limit
 SUPPORTED_SEGMENTATION_MODELS = {"threshold-hu"}
-SUPPORTED_STRUCTURES = {"scapula", "humerus", "clavicle"}
+SUPPORTED_STRUCTURES = {"scapula", "humerus", "glenoid", "clavicle"}
 
 
 class SliceInfo(BaseModel):
@@ -353,6 +354,11 @@ async def segment_case_ct(
             status_code=422,
             detail=f"Unsupported anatomical structures: {', '.join(unsupported_structures)}.",
         )
+    if "glenoid" in selected_structures and not {"scapula", "humerus"}.issubset(selected_structures):
+        raise HTTPException(
+            status_code=422,
+            detail="Glenoid region derivation requires both scapula and humerus targets.",
+        )
     if maxThresholdHu is not None and thresholdHu >= maxThresholdHu:
         raise HTTPException(status_code=422, detail="Minimum threshold must be lower than maximum threshold.")
     paths = _series_paths(case_id, case)
@@ -371,6 +377,19 @@ async def segment_case_ct(
                 else f"Segmentation is empty at threshold {thresholdHu:.1f} HU."
             )
         structure_masks, separation_method, separation_meta = separate_shoulder_bones(mask, analysis, selected_structures)
+        glenoid_meta = {
+            "status": "not_requested",
+            "confidence": None,
+            "notes": None,
+        }
+        if "glenoid" in selected_structures:
+            glenoid_mask, glenoid_meta = derive_glenoid_region(
+                structure_masks.get("scapula"),
+                structure_masks.get("humerus"),
+                analysis,
+            )
+            if glenoid_mask is not None:
+                structure_masks["glenoid"] = glenoid_mask
         segmentation_id = str(uuid.uuid4())
         mask_path = os.path.join(series_dir, f"{segmentation_id}.npz")
         import numpy as np
@@ -385,6 +404,9 @@ async def segment_case_ct(
         if "humerus" in structure_masks:
             save_payload["humerus_mask"] = structure_masks["humerus"].astype(np.uint8)
             save_payload["auto_humerus_mask"] = structure_masks["humerus"].astype(np.uint8)
+        if "glenoid" in structure_masks:
+            save_payload["glenoid_mask"] = structure_masks["glenoid"].astype(np.uint8)
+            save_payload["auto_glenoid_mask"] = structure_masks["glenoid"].astype(np.uint8)
         np.savez_compressed(mask_path, **save_payload)
 
         spacing = analysis["spacingMm"]
@@ -392,6 +414,7 @@ async def segment_case_ct(
         volume_mm3 = float(mask.sum()) * voxel_vol
         scap_voxels = int(structure_masks["scapula"].sum()) if "scapula" in structure_masks else 0
         hum_voxels = int(structure_masks["humerus"].sum()) if "humerus" in structure_masks else 0
+        glenoid_voxels = int(structure_masks["glenoid"].sum()) if "glenoid" in structure_masks else 0
     except (DicomValidationError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"Segmentation failed: {exc}") from exc
     now = datetime.now(timezone.utc).isoformat()
@@ -414,9 +437,14 @@ async def segment_case_ct(
         "voxelCount": int(mask.sum()),
         "scapulaVoxelCount": scap_voxels,
         "humerusVoxelCount": hum_voxels,
+        "glenoidVoxelCount": glenoid_voxels,
         "segmentationVolumeMm3": round(volume_mm3, 3),
         "scapulaVolumeMm3": round(scap_voxels * voxel_vol, 3),
         "humerusVolumeMm3": round(hum_voxels * voxel_vol, 3),
+        "glenoidVolumeMm3": round(glenoid_voxels * voxel_vol, 3),
+        "glenoidStatus": glenoid_meta["status"],
+        "glenoidConfidence": glenoid_meta["confidence"],
+        "glenoidNotes": glenoid_meta["notes"],
         "inputDimensions": [int(value) for value in volume.shape],
         "voxelSpacingMm": [float(value) for value in spacing],
         "createdAt": now,
@@ -467,7 +495,7 @@ async def get_segmentation_preview(
         mask = None
         if case.segmentationJob:
             combined_mask, mask_path = _load_saved_mask(case_id, case)
-            if structure in ("scapula", "humerus"):
+            if structure in ("scapula", "humerus", "glenoid"):
                 with np.load(mask_path) as archive:
                     key = f"{structure}_mask"
                     mask = archive[key].astype(bool) if key in archive else combined_mask
@@ -511,6 +539,7 @@ async def correct_case_segmentation(
     try:
         import numpy as np
         mask, mask_path = _load_saved_mask(case_id, case)
+        mask = mask.astype(bool)
         scapula_mask = None
         humerus_mask = None
         preserved_auto: Dict[str, Any] = {}
@@ -519,7 +548,8 @@ async def correct_case_segmentation(
                 scapula_mask = archive["scapula_mask"].astype(bool)
             if "humerus_mask" in archive:
                 humerus_mask = archive["humerus_mask"].astype(bool)
-            for auto_key in ("auto_mask", "auto_scapula_mask", "auto_humerus_mask"):
+            glenoid_mask = archive["glenoid_mask"].astype(bool) if "glenoid_mask" in archive else None
+            for auto_key in ("auto_mask", "auto_scapula_mask", "auto_humerus_mask", "auto_glenoid_mask"):
                 if auto_key in archive:
                     preserved_auto[auto_key] = archive[auto_key]
 
@@ -528,6 +558,8 @@ async def correct_case_segmentation(
             target_mask = scapula_mask
         elif correction.structure == "humerus" and humerus_mask is not None:
             target_mask = humerus_mask
+        elif correction.structure == "glenoid" and glenoid_mask is not None:
+            target_mask = glenoid_mask
 
         if correction.sliceIndex < 0 or correction.sliceIndex >= target_mask.shape[0]:
             raise DicomValidationError("Correction slice is outside the stored axial volume.")
@@ -550,6 +582,9 @@ async def correct_case_segmentation(
         elif correction.structure == "humerus" and humerus_mask is not None:
             humerus_mask = target_mask
             mask = humerus_mask | (scapula_mask if scapula_mask is not None else False)
+        elif correction.structure == "glenoid" and glenoid_mask is not None:
+            glenoid_mask = target_mask
+            mask = (scapula_mask if scapula_mask is not None else False) | (humerus_mask if humerus_mask is not None else False)
         else:
             mask = target_mask
             if scapula_mask is not None:
@@ -562,6 +597,8 @@ async def correct_case_segmentation(
             save_payload["scapula_mask"] = scapula_mask.astype(np.uint8)
         if humerus_mask is not None:
             save_payload["humerus_mask"] = humerus_mask.astype(np.uint8)
+        if glenoid_mask is not None:
+            save_payload["glenoid_mask"] = glenoid_mask.astype(np.uint8)
         np.savez_compressed(mask_path, **save_payload)
 
         job = dict(case.segmentationJob or {})
@@ -569,6 +606,7 @@ async def correct_case_segmentation(
         voxel_vol = float(spacing[0]) * float(spacing[1]) * float(spacing[2])
         scap_voxels = int(scapula_mask.sum()) if scapula_mask is not None else int(job.get("scapulaVoxelCount", 0))
         hum_voxels = int(humerus_mask.sum()) if humerus_mask is not None else int(job.get("humerusVoxelCount", 0))
+        glenoid_voxels = int(glenoid_mask.sum()) if glenoid_mask is not None else int(job.get("glenoidVoxelCount", 0))
         overlap_voxels = int((scapula_mask & humerus_mask).sum()) if (scapula_mask is not None and humerus_mask is not None) else 0
         job["overlapVoxelCount"] = overlap_voxels
         job.update({
@@ -579,9 +617,11 @@ async def correct_case_segmentation(
             "voxelCount": int(mask.sum()),
             "scapulaVoxelCount": scap_voxels,
             "humerusVoxelCount": hum_voxels,
+            "glenoidVoxelCount": glenoid_voxels,
             "segmentationVolumeMm3": round(float(mask.sum()) * voxel_vol, 3),
             "scapulaVolumeMm3": round(scap_voxels * voxel_vol, 3),
             "humerusVolumeMm3": round(hum_voxels * voxel_vol, 3),
+            "glenoidVolumeMm3": round(glenoid_voxels * voxel_vol, 3),
             "manualCorrections": [*(job.get("manualCorrections") or []), correction.model_dump()],
             "reconstructionStatus": "outdated",
         })
@@ -598,7 +638,7 @@ async def reconstruct_case_ct(
     thresholdHu: float = 300.0,
     authorization: Optional[str] = Header(None),
 ):
-    """Extract and persist patient-specific STL meshes (Scapula & Humerus when separated) from the saved segmentation mask."""
+    """Extract and persist patient-specific STL meshes from the saved segmentation mask."""
     user, case = _owned_case_for_modify(case_id, authorization)
     paths = _series_paths(case_id, case)
     if len(paths) < 2:
@@ -621,6 +661,8 @@ async def reconstruct_case_ct(
                 structure_targets.append(("scapula", archive["scapula_mask"].astype(bool)))
             if "humerus_mask" in archive and bool(archive["humerus_mask"].any()):
                 structure_targets.append(("humerus", archive["humerus_mask"].astype(bool)))
+            if "glenoid_mask" in archive and bool(archive["glenoid_mask"].any()):
+                structure_targets.append(("glenoid", archive["glenoid_mask"].astype(bool)))
 
         if not structure_targets:
             structure_targets.append(("combined", mask))
@@ -965,5 +1007,3 @@ def download_case_pdf_report(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="ShoulderTwin-{case_id}.pdf"'},
     )
-
-

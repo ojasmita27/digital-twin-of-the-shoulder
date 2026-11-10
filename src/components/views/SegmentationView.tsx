@@ -34,9 +34,10 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
   onNavigateToAnatomy,
 }) => {
   const [selectedModel, setSelectedModel] = useState('threshold-hu');
-  const [selectedStructures, setSelectedStructures] = useState<('scapula' | 'humerus' | 'clavicle')[]>([
+  const [selectedStructures, setSelectedStructures] = useState<('scapula' | 'humerus' | 'glenoid' | 'clavicle')[]>([
     'scapula',
     'humerus',
+    'glenoid',
   ]);
   const [thresholdHu, setThresholdHu] = useState(300);
   const [maxThresholdHu, setMaxThresholdHu] = useState<number | undefined>(undefined);
@@ -45,13 +46,13 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
   const [editSlice, setEditSlice] = useState(0);
   const [brushRadius, setBrushRadius] = useState(4);
   const [editMode, setEditMode] = useState<'add' | 'remove'>('add');
-  const [editStructure, setEditStructure] = useState<'combined' | 'scapula' | 'humerus'>('combined');
+  const [editStructure, setEditStructure] = useState<'combined' | 'scapula' | 'humerus' | 'glenoid'>('combined');
   const [pendingOperations, setPendingOperations] = useState<Array<{ x: number; y: number; radius: number; add: boolean }>>([]);
   const [redoOperations, setRedoOperations] = useState<Array<{ x: number; y: number; radius: number; add: boolean }>>([]);
   const [preview, setPreview] = useState<{ ctPreviewUrl: string; maskPreviewUrl?: string | null } | null>(null);
   const editorRef = useRef<HTMLCanvasElement>(null);
 
-  const toggleStructure = (struct: 'scapula' | 'humerus' | 'clavicle') => {
+  const toggleStructure = (struct: 'scapula' | 'humerus' | 'glenoid' | 'clavicle') => {
     setSelectedStructures((prev) =>
       prev.includes(struct) ? prev.filter((s) => s !== struct) : [...prev, struct]
     );
@@ -274,6 +275,7 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
               <div className="space-y-2">
                 {[
                   { id: 'scapula', label: 'Scapula & Glenoid Vault', desc: 'Cortical vault, acromion, coracoid' },
+                  { id: 'glenoid', label: 'Glenoid Region', desc: 'CT-derived glenoid-facing subregion; manual review required' },
                   { id: 'humerus', label: 'Proximal Humerus', desc: 'Humeral head, anatomical neck, diaphysis' },
                   { id: 'clavicle', label: 'Distal Clavicle', desc: 'Acromioclavicular articulation' },
                 ].map((item) => {
@@ -372,6 +374,17 @@ export const SegmentationView: React.FC<SegmentationViewProps> = ({
                   )}
                   {activeCase.segmentationJob.humerusVoxelCount !== undefined && (
                     <div className="flex justify-between"><span>Humerus voxels</span><span>{activeCase.segmentationJob.humerusVoxelCount}</span></div>
+                  )}
+                  {activeCase.segmentationJob.glenoidVoxelCount !== undefined && (
+                    <div className="flex justify-between"><span>Glenoid-region voxels</span><span>{activeCase.segmentationJob.glenoidVoxelCount}</span></div>
+                  )}
+                  {activeCase.segmentationJob.glenoidStatus && (
+                    <div className="flex justify-between gap-3">
+                      <span>Glenoid region</span>
+                      <span className="text-right text-amber-600 dark:text-amber-400 font-semibold">
+                        Manual review required
+                      </span>
+                    </div>
                   )}
                   {typeof activeCase.segmentationJob.overlapVoxelCount === 'number' && activeCase.segmentationJob.overlapVoxelCount > 0 && (
                     <div className="flex justify-between text-amber-600 dark:text-amber-400">

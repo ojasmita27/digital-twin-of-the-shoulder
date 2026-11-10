@@ -52,7 +52,7 @@ export const MeasurementsView: React.FC<MeasurementsViewProps> = ({ activeCase }
   }, [activeCase?.id, activeCase?.isDemo, activeCase?.measurements?.manualMeasurements]);
 
   const measurements = activeCase?.measurements;
-  const isDemo = activeCase?.isDemo || !measurements;
+  const isDemo = activeCase?.isDemo;
 
   const resolveLandmarkNames = (m: SavedMeasurement): string => {
     if (!m.pointRefs || m.pointRefs.length === 0) {
@@ -95,6 +95,8 @@ export const MeasurementsView: React.FC<MeasurementsViewProps> = ({ activeCase }
         <div className="flex items-center gap-2 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-3 py-1.5 rounded-md shadow-xs">
           {isDemo ? (
             <span className="text-amber-700 dark:text-amber-400">DEMO DATA · Computed from Reference Template</span>
+          ) : !measurements ? (
+            <span className="text-slate-500 dark:text-slate-400">NO MEASUREMENTS SAVED · Awaiting patient landmarks</span>
           ) : (
             <span className="text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 font-medium">
               <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />

@@ -37,10 +37,13 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   const [customMeshBuffer, setCustomMeshBuffer] = useState<ArrayBuffer | null>(null);
   const [scapulaBuffer, setScapulaBuffer] = useState<ArrayBuffer | null>(null);
   const [humerusBuffer, setHumerusBuffer] = useState<ArrayBuffer | null>(null);
+  const [glenoidBuffer, setGlenoidBuffer] = useState<ArrayBuffer | null>(null);
   const [scapulaColor, setScapulaColor] = useState('#e8dec8');
   const [humerusColor, setHumerusColor] = useState('#cbd5e1');
+  const [glenoidColor, setGlenoidColor] = useState('#67e8f9');
   const [scapulaOpacity, setScapulaOpacity] = useState(1.0);
   const [humerusOpacity, setHumerusOpacity] = useState(1.0);
+  const [glenoidOpacity, setGlenoidOpacity] = useState(0.9);
   const [boneQualityEnabled, setBoneQualityEnabled] = useState(false);
   const [boneQualityLoading, setBoneQualityLoading] = useState(false);
   const [boneQualityData, setBoneQualityData] = useState<Record<string, any> | null>(null);
@@ -59,6 +62,7 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   const [viewerPreferences, setViewerPreferences] = useState<ViewerPreferences>(() => ({
     scapulaVisible: activeCase?.viewerPreferences?.scapulaVisible ?? true,
     humerusVisible: activeCase?.viewerPreferences?.humerusVisible ?? true,
+    glenoidVisible: activeCase?.viewerPreferences?.glenoidVisible ?? true,
     landmarksVisible: activeCase?.viewerPreferences?.landmarksVisible ?? true,
     selectedModelId: activeCase?.viewerPreferences?.selectedModelId,
     selectedSliceIndex: activeCase?.viewerPreferences?.selectedSliceIndex,
@@ -70,6 +74,7 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   ) as MeshArtifact | undefined;
   const scapulaMesh = [...patientMeshes].reverse().find((mesh) => mesh.structure === 'scapula');
   const humerusMesh = [...patientMeshes].reverse().find((mesh) => mesh.structure === 'humerus');
+  const glenoidMesh = [...patientMeshes].reverse().find((mesh) => mesh.structure === 'glenoid');
   const hasSeparatePatientBones = Boolean(scapulaMesh && humerusMesh);
   const landmarks = (activeCase?.landmarks || []).filter((landmark) => (
     !savedModel || (landmark.modelId === savedModel.id && landmark.modelVersion === (savedModel.version || 1))
@@ -81,6 +86,7 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
     setViewerPreferences({
       scapulaVisible: activeCase?.viewerPreferences?.scapulaVisible ?? true,
       humerusVisible: activeCase?.viewerPreferences?.humerusVisible ?? true,
+      glenoidVisible: activeCase?.viewerPreferences?.glenoidVisible ?? true,
       landmarksVisible: activeCase?.viewerPreferences?.landmarksVisible ?? true,
       selectedModelId: activeCase?.viewerPreferences?.selectedModelId,
       selectedSliceIndex: activeCase?.viewerPreferences?.selectedSliceIndex,
@@ -92,20 +98,23 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
     if (!activeCase?.id || !scapulaMesh || !humerusMesh) {
       setScapulaBuffer(null);
       setHumerusBuffer(null);
+      setGlenoidBuffer(null);
       return;
     }
     Promise.all([
       apiClient.downloadModel(activeCase.id, scapulaMesh.id),
       apiClient.downloadModel(activeCase.id, humerusMesh.id),
-    ]).then(([scapRes, humRes]) => {
+      glenoidMesh ? apiClient.downloadModel(activeCase.id, glenoidMesh.id) : Promise.resolve({ data: null, error: null, status: null, durationMs: 0 }),
+    ]).then(([scapRes, humRes, glenoidRes]) => {
       if (cancelled) return;
       if (scapRes.data) setScapulaBuffer(scapRes.data);
       if (humRes.data) setHumerusBuffer(humRes.data);
+      if (glenoidRes.data) setGlenoidBuffer(glenoidRes.data);
     });
     return () => {
       cancelled = true;
     };
-  }, [activeCase?.id, scapulaMesh?.id, humerusMesh?.id]);
+  }, [activeCase?.id, scapulaMesh?.id, humerusMesh?.id, glenoidMesh?.id]);
 
   const persistViewerPreferences = (next: ViewerPreferences) => {
     setViewerPreferences(next);
@@ -388,6 +397,41 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
                             <span className="w-8 text-right font-mono">{Math.round(humerusOpacity * 100)}%</span>
                           </div>
                         </div>
+                        {glenoidMesh && (
+                          <div className="rounded bg-slate-50 dark:bg-slate-800/60 p-2.5 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <label className="flex items-center gap-2 font-medium text-slate-800 dark:text-slate-200 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={viewerPreferences.glenoidVisible ?? true}
+                                  onChange={(e) => persistViewerPreferences({ ...viewerPreferences, glenoidVisible: e.target.checked })}
+                                  className="rounded border-slate-300 text-teal-600 focus:ring-teal-500"
+                                />
+                                <span>Glenoid region</span>
+                              </label>
+                              <input
+                                type="color"
+                                value={glenoidColor}
+                                onChange={(e) => setGlenoidColor(e.target.value)}
+                                title="Glenoid region color"
+                                className="h-5 w-7 cursor-pointer rounded border border-slate-300 dark:border-slate-700 bg-transparent"
+                              />
+                            </div>
+                            <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                              <span>Opacity</span>
+                              <input
+                                type="range"
+                                min={0.15}
+                                max={1}
+                                step={0.05}
+                                value={glenoidOpacity}
+                                onChange={(e) => setGlenoidOpacity(parseFloat(e.target.value))}
+                                className="flex-1 accent-teal-600"
+                              />
+                              <span className="w-8 text-right font-mono">{Math.round(glenoidOpacity * 100)}%</span>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                     {activeCase?.segmentationJob && (
@@ -857,6 +901,7 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
             customStlBuffer={hasSeparatePatientBones ? null : customMeshBuffer}
             scapulaBuffer={scapulaBuffer}
             humerusBuffer={humerusBuffer}
+            glenoidBuffer={glenoidBuffer}
             scapulaColor={
               boneQualityEnabled && boneQualityData?.scapula
                 ? (boneQualityData.scapula.meanHu < huThresholds.lowHu ? '#ef4444' : boneQualityData.scapula.meanHu < huThresholds.midHu ? '#f59e0b' : boneQualityData.scapula.meanHu < huThresholds.highHu ? '#10b981' : '#06b6d4')
@@ -869,6 +914,9 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
             }
             scapulaOpacity={scapulaOpacity}
             humerusOpacity={humerusOpacity}
+            glenoidColor={glenoidColor}
+            glenoidOpacity={glenoidOpacity}
+            glenoidVisible={viewerPreferences.glenoidVisible}
             customModelName={savedModel?.filename || 'restored-model.stl'}
             unitScale={savedModel?.unit || 'unknown'}
             scapulaVisible={viewerPreferences.scapulaVisible}

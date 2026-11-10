@@ -56,6 +56,12 @@ export interface DicomUploadResponse {
   studyInstanceUid: string;
   sliceCount: number;
   sliceThicknessMm: number;
+  sliceSpacingMm?: number;
+  zCoverageMm?: number;
+  volumeDimensionsMm?: [number, number, number];
+  duplicateCount?: number;
+  hasGaps?: boolean;
+  gapWarnings?: string[];
   pixelSpacingMm: [number, number];
   rows: number;
   columns: number;

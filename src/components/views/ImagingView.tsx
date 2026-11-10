@@ -73,6 +73,12 @@ export const ImagingView: React.FC<ImagingViewProps> = ({
           seriesInstanceUid: res.data.seriesInstanceUid,
           studyInstanceUid: res.data.studyInstanceUid,
           sliceThicknessMm: res.data.sliceThicknessMm,
+          sliceSpacingMm: res.data.sliceSpacingMm,
+          zCoverageMm: res.data.zCoverageMm,
+          volumeDimensionsMm: res.data.volumeDimensionsMm,
+          duplicateCount: res.data.duplicateCount,
+          hasGaps: res.data.hasGaps,
+          gapWarnings: res.data.gapWarnings,
           pixelSpacingMm: res.data.pixelSpacingMm,
           rows: res.data.rows,
           columns: res.data.columns,
@@ -234,6 +240,12 @@ export const ImagingView: React.FC<ImagingViewProps> = ({
                     <span className="text-slate-500">Slice Thickness:</span>
                     <span>{imaging.sliceThicknessMm} mm</span>
                   </div>
+                  {imaging.sliceSpacingMm !== undefined && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Slice Spacing:</span>
+                      <span>{imaging.sliceSpacingMm.toFixed(2)} mm</span>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-slate-500">Pixel Spacing:</span>
                     <span>
@@ -258,7 +270,7 @@ export const ImagingView: React.FC<ImagingViewProps> = ({
                 {/* 3D Reconstruction Readiness Card */}
                 <div
                   className={`p-3 rounded-lg border text-xs space-y-1.5 ${
-                    imaging.reconstructionReadiness === 'READY_FOR_3D_SURFACE'
+                    imaging.reconstructionReadiness === 'volumetric_reconstruction_ready'
                       ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/50 text-emerald-800 dark:text-emerald-200'
                       : 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800/50 text-amber-800 dark:text-amber-200'
                   }`}
@@ -275,6 +287,13 @@ export const ImagingView: React.FC<ImagingViewProps> = ({
                         ? 'Series contains contiguous volumetric coverage suitable for bone surface extraction.'
                         : 'Single 2D CT slice loaded. 3D bone meshing requires multi-slice contiguous scan.')}
                   </p>
+                  {(imaging.hasGaps || (imaging.duplicateCount ?? 0) > 0) && (
+                    <div className="border-t border-amber-200/80 dark:border-amber-800/50 pt-2 text-[11px]">
+                      <div className="font-semibold">Series integrity warnings</div>
+                      {imaging.duplicateCount ? <div>{imaging.duplicateCount} duplicate slice(s) ignored.</div> : null}
+                      {imaging.gapWarnings?.map((warning) => <div key={warning}>{warning}</div>)}
+                    </div>
+                  )}
 
                   {(imaging.sliceCount <= 1 || imaging.isVolumetricSeries === false) && onNavigateToAnatomy && (
                     <button

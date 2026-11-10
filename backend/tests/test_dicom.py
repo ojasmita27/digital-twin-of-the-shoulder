@@ -165,6 +165,16 @@ def test_upload_valid_single_slice_dicom(auth_headers):
     assert data["primaryPreviewUrl"].startswith("data:image/png;base64,")
 
 
+def test_upload_non_ct_modality_is_rejected(auth_headers):
+    dcm_bytes = create_synthetic_dicom_bytes(modality="MR")
+    files = [("files", ("mr-series.dcm", dcm_bytes, "application/dicom"))]
+
+    res = client.post("/api/imaging/upload", files=files, headers=auth_headers)
+
+    assert res.status_code == 400
+    assert "Only axial CT acquisition series are supported" in res.json()["detail"]
+
+
 def test_upload_dicom_to_existing_case(auth_headers):
     # 1. Create a case
     create_res = client.post(
@@ -492,6 +502,31 @@ def test_segmentation_rejects_invalid_threshold_range(auth_headers):
     assert "lower than maximum" in response.json()["detail"]
 
 
+def test_glenoid_region_is_derived_from_patient_space_masks():
+    from backend.app.services.dicom_service import derive_glenoid_region
+
+    scapula = np.zeros((8, 20, 8), dtype=bool)
+    humerus = np.zeros_like(scapula)
+    scapula[2:6, 2:18, 2:6] = True
+    humerus[2:6, 18:20, 2:6] = True
+    region, metadata = derive_glenoid_region(
+        scapula,
+        humerus,
+        {
+            "spacingMm": [1.0, 1.0, 1.0],
+            "orientation": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            "originMm": [0.0, 0.0, 0.0],
+        },
+    )
+
+    assert region is not None
+    assert region.dtype == bool
+    assert 0 < int(region.sum()) < int(scapula.sum())
+    assert np.all(region <= scapula)
+    assert metadata["status"] == "manual_review_required"
+    assert "patient-space geometry" in metadata["notes"]
+
+
 def test_separate_shoulder_bones_disconnected_and_touching():
     import numpy as np
     import pytest
@@ -541,5 +576,3 @@ def test_separate_shoulder_bones_disconnected_and_touching():
     empty_mask = np.zeros((8, 8, 8), dtype=bool)
     with pytest.raises(DicomValidationError):
         separate_shoulder_bones(empty_mask, analysis, ["scapula", "humerus"])
-
-
