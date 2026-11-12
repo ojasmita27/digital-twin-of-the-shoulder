@@ -30,6 +30,7 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [cases, setCases] = useState<ResearchCase[]>(caseStorage.getAllCases());
   const [activeCase, setActiveCase] = useState<ResearchCase | null>(caseStorage.getActiveCase());
+  const [patientPosition, setPatientPosition] = useState<[number, number, number] | null>(null);
 
   const [isLoadingCases, setIsLoadingCases] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
@@ -271,6 +272,7 @@ export default function App() {
           {currentRoute === 'imaging' && (
             <ImagingView
               activeCase={activeCase}
+              onPatientPositionChange={setPatientPosition}
               onNavigateToAnatomy={() => setCurrentRoute('anatomy3d')}
               onUpdateImaging={(meta) => {
                 if (activeCase) {
@@ -302,6 +304,8 @@ export default function App() {
           {currentRoute === 'anatomy3d' && (
             <Anatomy3DView
               activeCase={activeCase}
+              patientPosition={patientPosition}
+              patientPositionValid={Boolean(patientPosition)}
               onUpdateCaseLandmarks={(landmarks) => {
                 if (activeCase) {
                   caseStorage.updateCase(activeCase.id, { landmarks });

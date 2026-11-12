@@ -98,3 +98,23 @@
 | **Training Pipeline** | Pre-trained on shoulder CT datasets | **No training scripts or weights**. Phase 2 milestone will incorporate containerized ONNX Runtime or TorchServe. |
 
 *Academic Honesty Statement*: During academic evaluations and project presentations, this must be described as an **"interactive preclinical prototype with a simulated inference pipeline and typed API contracts ready for future model deployment."**
+
+## 4. Advanced Imaging Milestone (November 2026)
+
+Implemented and verified in the current workspace:
+
+- Server-side mesh quality analysis for uploaded STL, OBJ, and ASCII PLY files. Results include boundary and non-manifold edges, degenerate triangles, duplicate vertices, connected components, surface area, bounds, normal validity, and watertightness. Original files remain unchanged.
+- Authorized research analytics at `GET /api/research/analytics`.
+- Authorized measurement CSV, planning JSON, and PDF research exports at `/api/research/cases/{case_id}/...`.
+- DICOM upload responses now persist explicit orientation (patient LPS) and voxel spacing validation metadata.
+- Frontend API client/types expose analytics, mesh-quality, and research-export contracts.
+
+Remaining limitations are intentional: multi-series ingestion, ML-backed segmentation, voxel-level undo/redo history, and mesh repair outputs are not represented as complete features until their persistence and validation workflows are implemented and tested.
+
+## 5. Complete 3-Plane CT Viewer Milestone (November 2026)
+
+The existing CT viewer now uses actual stored DICOM volume previews for axial, coronal, and sagittal panes. A shared fractional voxel coordinate drives slice selection and crosshair placement across all panes. DICOM patient LPS origin, direction cosines, spacing, and voxel dimensions are persisted with imaging metadata and returned by preview requests.
+
+The backend keeps a bounded two-volume in-process cache keyed by source file paths and modification signatures, avoiding repeated DICOM decoding during synchronized navigation. Patient-to-voxel and voxel-to-patient transforms are explicit and tested with non-square spacing and oblique direction cosines. The 3D scene receives a position marker only when the selected model declares matching DICOM patient LPS provenance.
+
+The viewer intentionally does not claim clinical registration or diagnostic accuracy. Cases lacking valid patient origin/direction metadata remain viewable where existing workflows permit, but 3D registration is disabled.

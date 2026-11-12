@@ -53,6 +53,7 @@ class ResearchCase(BaseModel):
     implantAssets: List[Dict[str, Any]] = Field(default_factory=list)
     implantReferencePoints: List[Dict[str, Any]] = Field(default_factory=list)
     planningMeasurements: List[Dict[str, Any]] = Field(default_factory=list)
+    registration: Optional[Dict[str, Any]] = None
     reports: List[Dict[str, Any]] = Field(default_factory=list)
     viewerPreferences: Optional[Dict[str, Any]] = None
     createdByUserId: Optional[str] = None

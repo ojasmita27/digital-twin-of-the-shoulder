@@ -28,12 +28,14 @@ interface ImagingViewProps {
   activeCase: ResearchCase | null;
   onUpdateImaging?: (metadata: CTSliceMetadata) => void;
   onNavigateToAnatomy?: () => void;
+  onPatientPositionChange?: (position: [number, number, number] | null) => void;
 }
 
 export const ImagingView: React.FC<ImagingViewProps> = ({
   activeCase,
   onUpdateImaging,
   onNavigateToAnatomy,
+  onPatientPositionChange,
 }) => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -94,6 +96,12 @@ export const ImagingView: React.FC<ImagingViewProps> = ({
           isVolumetricSeries: res.data.isVolumetricSeries,
           reconstructionReadiness: res.data.reconstructionReadiness,
           reconstructionMessage: res.data.reconstructionMessage,
+          coordinateSystem: res.data.coordinateSystem,
+          originMm: res.data.originMm,
+          orientationPatient: res.data.orientationPatient,
+          dimensionsVoxels: res.data.dimensionsVoxels,
+          orientationValidation: res.data.orientationValidation,
+          spacingValidation: res.data.spacingValidation,
         };
 
         setUploadSuccess(
@@ -333,7 +341,12 @@ export const ImagingView: React.FC<ImagingViewProps> = ({
 
         {/* SECTION B: Interactive CT Canvas Viewer (Right 3 Cols) */}
         <div className="lg:col-span-3">
-          <CTViewer metadata={imaging} caseId={activeCase?.id} />
+          <CTViewer
+            metadata={imaging}
+            caseId={activeCase?.id}
+            onNavigateToAnatomy={onNavigateToAnatomy}
+            onPatientPositionChange={onPatientPositionChange}
+          />
         </div>
       </div>
 

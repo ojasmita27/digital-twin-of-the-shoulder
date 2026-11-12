@@ -25,6 +25,8 @@ from ..services.dicom_service import (
     load_volume_from_files,
     extract_patient_space_mesh_from_mask,
     render_plane_preview_base64,
+    patient_to_voxel,
+    volume_plane_geometry,
     separate_shoulder_bones,
     derive_glenoid_region,
 )
@@ -81,6 +83,12 @@ class DicomUploadResponse(BaseModel):
     primaryPreviewUrl: Optional[str] = None
     sourceFiles: List[str] = []
     processingStatus: str = "validated"
+    orientationValidation: Optional[Dict[str, Any]] = None
+    spacingValidation: Optional[Dict[str, Any]] = None
+    coordinateSystem: str = "DICOM patient LPS"
+    originMm: Optional[List[float]] = None
+    orientationPatient: Optional[List[float]] = None
+    dimensionsVoxels: Optional[List[int]] = None
 
 
 class SegmentationCorrection(BaseModel):
@@ -238,6 +246,12 @@ async def process_uploaded_dicom_files(
         slices=slices_summary,
         primaryPreviewUrl=primary_preview,
         sourceFiles=stored_files,
+        orientationValidation=analysis.get("orientationValidation"),
+        spacingValidation=analysis.get("spacingValidation"),
+        coordinateSystem="DICOM patient LPS",
+        originMm=primary_meta.get("imagePositionPatient"),
+        orientationPatient=primary_meta.get("imageOrientationPatient"),
+        dimensionsVoxels=[analysis["sliceCount"], primary_meta["rows"], primary_meta["columns"]],
     )
 
 
@@ -303,6 +317,12 @@ async def upload_case_dicom(
         "sourceStorage": os.path.relpath(series_dir, settings.DATA_DIR),
         "uploadedAt": datetime.now(timezone.utc).isoformat(),
         "processingStatus": response.processingStatus,
+        "orientationValidation": response.orientationValidation,
+        "spacingValidation": response.spacingValidation,
+        "coordinateSystem": response.coordinateSystem,
+        "originMm": response.originMm,
+        "orientationPatient": response.orientationPatient,
+        "dimensionsVoxels": response.dimensionsVoxels,
     }
 
     case_store.update_case(
@@ -481,6 +501,9 @@ async def get_segmentation_preview(
     windowCenter: Optional[float] = None,
     windowWidth: Optional[float] = None,
     structure: Optional[str] = None,
+    patientX: Optional[float] = None,
+    patientY: Optional[float] = None,
+    patientZ: Optional[float] = None,
     authorization: Optional[str] = Header(None),
 ):
     user = get_current_user(authorization)
@@ -506,7 +529,21 @@ async def get_segmentation_preview(
             "coronal": volume.shape[1],
             "sagittal": volume.shape[2],
         }
-        if orientation not in dimensions or sliceIndex < 0 or sliceIndex >= dimensions[orientation]:
+        if orientation not in dimensions:
+            raise DicomValidationError(f"Unsupported preview orientation '{orientation}'.")
+        selected_voxel = None
+        if patientX is not None and patientY is not None and patientZ is not None:
+            selected_voxel = patient_to_voxel(
+                [patientX, patientY, patientZ],
+                analysis["originMm"],
+                analysis["orientation"],
+                analysis["spacingMm"],
+            )
+            axis = {"axial": 0, "coronal": 1, "sagittal": 2}[orientation]
+            sliceIndex = int(round(selected_voxel[axis]))
+            if any(value < 0 or value >= volume.shape[index] for index, value in enumerate(selected_voxel)):
+                raise DicomValidationError("Requested patient coordinate is outside the stored volume.")
+        if sliceIndex < 0 or sliceIndex >= dimensions[orientation]:
             raise DicomValidationError("Requested preview slice is outside the stored volume.")
         preview = render_plane_preview_base64(
             volume,
@@ -515,6 +552,7 @@ async def get_segmentation_preview(
             sliceIndex,
             float(windowCenter if windowCenter is not None else (case.imaging or {}).get("windowCenter", 450)),
             float(windowWidth if windowWidth is not None else (case.imaging or {}).get("windowWidth", 1500)),
+            spacing_mm=analysis["spacingMm"],
         )
         return {
             **preview,
@@ -522,6 +560,8 @@ async def get_segmentation_preview(
             "sliceIndex": sliceIndex,
             "dimensions": list(volume.shape),
             "spacingMm": analysis["spacingMm"],
+            "geometry": volume_plane_geometry(analysis),
+            "selectedVoxel": selected_voxel,
             "segmentationVersion": (case.segmentationJob or {}).get("version"),
         }
     except (DicomValidationError, OSError, ValueError) as exc:
@@ -695,6 +735,7 @@ async def reconstruct_case_ct(
                 "storageName": stored_name,
                 "unit": "mm",
                 "unitVerified": True,
+                "coordinateSystem": "DICOM patient LPS",
                 "provenance": f"Patient CT {struct_name} segmentation (v{seg_version}) and marching-cubes surface extraction",
                 "isDemoMesh": False,
                 "qualityChecks": {

@@ -8,6 +8,7 @@ import {
   ApiContractDefinition,
   BackendConfig,
   DicomUploadResponse,
+  ResearchAnalytics,
 } from '../types/api';
 import { AnatomicalLandmark, ImplantAsset, ImplantReferencePoint, ImplantSpatialAnalysis, MeshArtifact, PlanningMeasurement, PlanningVersion, ResearchCase, SavedMeasurement } from '../types/case';
 
@@ -290,6 +291,18 @@ export class ApiClient {
     });
   }
 
+  public async getResearchAnalytics(): Promise<ApiCallResult<ResearchAnalytics>> {
+    return this.request<ResearchAnalytics>('/api/research/analytics');
+  }
+
+  public async getModelQuality(caseId: string, modelId: string): Promise<ApiCallResult<Record<string, unknown>>> {
+    return this.request<Record<string, unknown>>(`/api/cases/${encodeURIComponent(caseId)}/models/${encodeURIComponent(modelId)}/quality`);
+  }
+
+  public async downloadResearchExport(caseId: string, format: 'measurements.csv' | 'planning.json' | 'report.pdf'): Promise<ApiCallResult<ArrayBuffer>> {
+    return this.downloadBinary(`/api/research/cases/${encodeURIComponent(caseId)}/${format}`);
+  }
+
   public async uploadModel(caseId: string, file: File, metadata: Record<string, unknown>): Promise<ApiCallResult<{ model: MeshArtifact }>> {
     const rawBase = (this.config.baseUrl || '').trim().replace(/\/+$/, '');
     const endpoint = `/api/cases/${encodeURIComponent(caseId)}/models`;
@@ -429,11 +442,39 @@ export class ApiClient {
     coordinateUnit: string;
     unitVerified: boolean;
     validationNotes?: string;
+    category?: string;
+    coordinateSystem?: string;
+    placementMethod?: string;
+    ctSeriesId?: string;
+    visible?: boolean;
   }): Promise<ApiCallResult<AnatomicalLandmark>> {
     return this.request<AnatomicalLandmark>(`/api/cases/${encodeURIComponent(caseId)}/landmarks`, {
       method: 'POST',
       body: JSON.stringify(landmark),
     });
+  }
+
+  public async createRegistration(caseId: string, payload: {
+    modelId: string;
+    modelVersion: number;
+    coordinateSystemSource?: string;
+    coordinateSystemTarget?: string;
+    correspondences: Array<{ sourceLandmarkId: string; targetLandmarkId: string }>;
+  }): Promise<ApiCallResult<import('../types/case').RegistrationResult>> {
+    return this.request<import('../types/case').RegistrationResult>(
+      `/api/cases/${encodeURIComponent(caseId)}/registrations`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    );
+  }
+
+  public async getRegistration(caseId: string): Promise<ApiCallResult<import('../types/case').RegistrationResult | null>> {
+    return this.request<import('../types/case').RegistrationResult | null>(
+      `/api/cases/${encodeURIComponent(caseId)}/registrations`,
+    );
+  }
+
+  public async invalidateRegistration(caseId: string): Promise<ApiCallResult<void>> {
+    return this.request<void>(`/api/cases/${encodeURIComponent(caseId)}/registrations`, { method: 'DELETE' });
   }
 
   public async updateLandmark(caseId: string, landmarkId: string, updates: Partial<AnatomicalLandmark>): Promise<ApiCallResult<AnatomicalLandmark>> {
@@ -607,6 +648,7 @@ export class ApiClient {
     windowCenter?: number,
     windowWidth?: number,
     structure?: 'combined' | 'scapula' | 'humerus' | 'glenoid',
+    patientPosition?: [number, number, number],
   ): Promise<ApiCallResult<{
     ctPreviewUrl: string;
     maskPreviewUrl?: string | null;
@@ -614,11 +656,23 @@ export class ApiClient {
     sliceIndex: number;
     dimensions: number[];
     spacingMm: number[];
+    geometry: {
+      coordinateSystem: string;
+      originMm: number[];
+      orientationPatient: number[];
+      spacingMm: number[];
+      dimensionsVoxels: number[];
+      planes: Record<string, { sliceCount: number; rowAxis: string; columnAxis: string }>;
+    };
+    selectedVoxel?: number[] | null;
     segmentationVersion?: number;
   }>> {
     const structureQuery = structure && structure !== 'combined' ? `&structure=${encodeURIComponent(structure)}` : '';
+    const patientQuery = patientPosition
+      ? `&patientX=${patientPosition[0]}&patientY=${patientPosition[1]}&patientZ=${patientPosition[2]}`
+      : '';
     return this.request(
-      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation/preview?orientation=${orientation}&sliceIndex=${sliceIndex}&windowCenter=${windowCenter ?? 450}&windowWidth=${windowWidth ?? 1500}${structureQuery}`,
+      `/api/cases/${encodeURIComponent(caseId)}/imaging/segmentation/preview?orientation=${orientation}&sliceIndex=${sliceIndex}&windowCenter=${windowCenter ?? 450}&windowWidth=${windowWidth ?? 1500}${structureQuery}${patientQuery}`,
       { method: 'GET' },
     );
   }
@@ -802,5 +856,21 @@ export const API_CONTRACTS: ApiContractDefinition[] = [
     requestBodySchema: `{ "includeImages": true, "format": "pdf" }`,
     responseSchema: `{ "reportId": "rep-2026-0042", "reportUrl": "/api/reports/rep-2026-0042.pdf" }`,
     status: 'pending_fastapi_backend',
+  },
+  {
+    method: 'GET',
+    endpoint: '/api/cases/{case_id}/models/{model_id}/quality',
+    summary: 'Validate Imported Mesh',
+    description: 'Returns persisted server-side STL, OBJ, or ASCII PLY quality metrics without modifying the source file.',
+    responseSchema: `{ "modelId": "...", "quality": { "watertight": false, "boundaryEdgeCount": 3 } }`,
+    status: 'implemented_client_ready',
+  },
+  {
+    method: 'GET',
+    endpoint: '/api/research/analytics',
+    summary: 'Research Analytics',
+    description: 'Aggregates authorized database records for cases, imaging, segmentation, models, measurements, and planning versions.',
+    responseSchema: `{ "caseCount": 0, "availableImagingStudies": 0, "measurementRecordCount": 0 }`,
+    status: 'implemented_client_ready',
   },
 ];

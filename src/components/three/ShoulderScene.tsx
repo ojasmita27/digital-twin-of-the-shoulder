@@ -101,6 +101,8 @@ interface ShoulderSceneProps {
   humerusOpacity?: number;
   glenoidOpacity?: number;
   glenoidVisible?: boolean;
+  patientPosition?: [number, number, number] | null;
+  patientPositionValid?: boolean;
 }
 
 export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
@@ -152,6 +154,8 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   humerusOpacity = 1.0,
   glenoidOpacity = 0.9,
   glenoidVisible: glenoidVisibleProp,
+  patientPosition = null,
+  patientPositionValid = false,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -173,6 +177,7 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
   const referenceMarkersManagerRef = useRef<ReferencePointMarkersManager | null>(null);
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
   const axesHelperRef = useRef<THREE.AxesHelper | null>(null);
+  const patientMarkerRef = useRef<THREE.Mesh | null>(null);
 
   // Lighting refs
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
@@ -387,6 +392,13 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
     const measurementGroup = new THREE.Group();
     scene.add(measurementGroup);
     measurementGroupRef.current = measurementGroup;
+    const patientMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(2.5, 20, 12),
+      new THREE.MeshBasicMaterial({ color: 0x22d3ee }),
+    );
+    patientMarker.visible = false;
+    scene.add(patientMarker);
+    patientMarkerRef.current = patientMarker;
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
@@ -506,6 +518,13 @@ export const ShoulderScene: React.FC<ShoulderSceneProps> = ({
       }
     };
   }, []);
+
+  useEffect(() => {
+    const marker = patientMarkerRef.current;
+    if (!marker) return;
+    marker.visible = Boolean(patientPositionValid && patientPosition);
+    if (marker.visible && patientPosition) marker.position.set(...patientPosition);
+  }, [patientPosition, patientPositionValid]);
 
   useEffect(() => {
     if (!customStlBuffer || !sceneRef.current) return;

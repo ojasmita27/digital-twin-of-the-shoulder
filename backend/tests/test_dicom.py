@@ -14,6 +14,7 @@ import backend.app.dependencies as deps_module
 import backend.app.routers.cases as cases_router
 import backend.app.routers.imaging as imaging_router
 import backend.app.routers.auth as auth_router
+from backend.app.services.dicom_service import patient_to_voxel, voxel_to_patient
 
 client = TestClient(app)
 
@@ -128,6 +129,15 @@ def create_synthetic_dicom_bytes(
     buf = io.BytesIO()
     ds.save_as(buf)
     return buf.getvalue()
+
+
+def test_patient_voxel_round_trip_preserves_non_square_spacing_and_orientation():
+    origin = [12.0, -8.0, 40.0]
+    orientation = [0.0, 1.0, 0.0, 0.0, 0.0, -1.0]
+    spacing = [2.5, 0.7, 1.3]
+    voxel = (3.0, 11.0, 7.0)
+    patient = voxel_to_patient(voxel, origin, orientation, spacing)
+    assert patient_to_voxel(patient, origin, orientation, spacing) == list(voxel)
 
 
 def test_upload_dicom_no_files():

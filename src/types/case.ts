@@ -59,6 +59,12 @@ export interface CTSliceMetadata {
   uploadedFiles?: string[];
   sliceLocation?: number;
   instanceNumber?: number;
+  coordinateSystem?: 'DICOM patient LPS' | string;
+  originMm?: [number, number, number];
+  orientationPatient?: [number, number, number, number, number, number];
+  dimensionsVoxels?: [number, number, number];
+  orientationValidation?: { valid: boolean; imageOrientationPatient: number[]; patientCoordinateSystem: string };
+  spacingValidation?: { valid: boolean; pixelSpacingMm: number[]; sliceSpacingMm: number; sliceThicknessMm: number };
 }
 
 export interface AnatomicalLandmark {
@@ -76,6 +82,27 @@ export interface AnatomicalLandmark {
   verificationStatus?: 'unverified' | 'verified';
   createdAt?: string;
   updatedAt?: string;
+  category?: string;
+  coordinateSystem?: string;
+  placementMethod?: string;
+  ctSeriesId?: string;
+  visible?: boolean;
+}
+
+export interface RegistrationResult {
+  id: string;
+  status: 'valid' | 'invalidated';
+  modelId: string;
+  modelVersion: number;
+  coordinateSystemSource: string;
+  coordinateSystemTarget: string;
+  rotation: number[][];
+  translation: [number, number, number];
+  residualsMm: number[];
+  meanErrorMm: number;
+  maximumErrorMm: number;
+  rmseMm: number;
+  correspondenceCount: number;
 }
 
 export interface SavedMeasurement {
@@ -288,6 +315,7 @@ export interface MeshArtifact {
   triangleCount?: number;
   qualityChecks?: Record<string, unknown>;
   storageName?: string;
+  coordinateSystem?: string;
 }
 
 export interface ViewerPreferences {

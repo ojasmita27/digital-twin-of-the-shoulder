@@ -43,6 +43,7 @@ export interface SliceInfo {
   columns: number;
   hasPixelData: boolean;
   previewDataUrl?: string;
+  physicalPositionMm?: number;
 }
 
 export interface DicomUploadResponse {
@@ -76,4 +77,30 @@ export interface DicomUploadResponse {
   primaryPreviewUrl?: string;
   sourceFiles?: string[];
   processingStatus?: string;
+  orientationValidation?: {
+    valid: boolean;
+    imageOrientationPatient: number[];
+    patientCoordinateSystem: string;
+  };
+  spacingValidation?: {
+    valid: boolean;
+    pixelSpacingMm: number[];
+    sliceSpacingMm: number;
+    sliceThicknessMm: number;
+  };
+  coordinateSystem?: string;
+  originMm?: [number, number, number];
+  orientationPatient?: [number, number, number, number, number, number];
+  dimensionsVoxels?: [number, number, number];
+}
+
+export interface ResearchAnalytics {
+  caseCount: number;
+  processedCaseCount: number;
+  availableImagingStudies: number;
+  segmentationStatus: { completed: number; pending: number };
+  modelStatus: { casesWithModels: number; modelCount: number };
+  measurementRecordCount: number;
+  implantPlanningVersionCount: number;
+  processingStatistics: { volumetricSeries: number; reconstructionReady: number };
 }

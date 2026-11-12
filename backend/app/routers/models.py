@@ -15,6 +15,7 @@ from ..dependencies import get_current_user, require_role
 from ..models.case import ResearchCase
 from ..models.user import UserRole
 from ..storage import case_store
+from ..services.mesh_quality import MeshParseError, analyze_mesh
 
 router = APIRouter(prefix="/api", tags=["models"])
 MAX_MODEL_SIZE_BYTES = 100 * 1024 * 1024
@@ -39,12 +40,22 @@ class LandmarkPayload(BaseModel):
     coordinateUnit: str = "mm"
     unitVerified: bool = False
     validationNotes: Optional[str] = None
+    category: str = "anatomical"
+    coordinateSystem: str = "model"
+    placementMethod: str = "manual"
+    ctSeriesId: Optional[str] = None
+    visible: bool = True
 
 
 class LandmarkUpdatePayload(BaseModel):
     name: Optional[str] = None
     coordinatesMm: Optional[List[float]] = None
     validationNotes: Optional[str] = None
+    category: Optional[str] = None
+    coordinateSystem: Optional[str] = None
+    placementMethod: Optional[str] = None
+    ctSeriesId: Optional[str] = None
+    visible: Optional[bool] = None
 
 
 class MeasurementPayload(BaseModel):
@@ -893,6 +904,15 @@ async def upload_case_model(
     if not isinstance(supplied_metadata, dict):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Model metadata must be an object.")
 
+    try:
+        quality = analyze_mesh(content, extension)
+    except MeshParseError as error:
+        quality = {
+            "format": extension,
+            "validationStatus": "invalid_geometry",
+            "validationError": str(error),
+        }
+
     model = {
         "id": model_id,
         "version": 1,
@@ -906,15 +926,16 @@ async def upload_case_model(
         "storageName": stored_name,
         "unit": "unknown",
         "unitVerified": False,
+        "coordinateSystem": supplied_metadata.get("coordinateSystem", "unknown"),
         "provenance": "imported",
         "isDemoMesh": False,
-        "vertexCount": supplied_metadata.get("vertexCount"),
-        "triangleCount": supplied_metadata.get("triangleCount"),
-        "faceCount": supplied_metadata.get("triangleCount", 0),
-        "boundingBox": supplied_metadata.get("boundingBox"),
-        "surfaceArea": supplied_metadata.get("surfaceArea"),
-        "qualityChecks": supplied_metadata.get("qualityChecks"),
-        "validationStatus": supplied_metadata.get("validationStatus", "valid"),
+        "vertexCount": quality.get("vertexCount", supplied_metadata.get("vertexCount")),
+        "triangleCount": quality.get("triangleCount", supplied_metadata.get("triangleCount")),
+        "faceCount": quality.get("faceCount", supplied_metadata.get("triangleCount", 0)),
+        "boundingBox": quality.get("boundingBox", supplied_metadata.get("boundingBox")),
+        "surfaceArea": quality.get("surfaceArea", supplied_metadata.get("surfaceArea")),
+        "qualityChecks": quality,
+        "validationStatus": quality.get("validationStatus", supplied_metadata.get("validationStatus", "valid")),
     }
     meshes = [mesh for mesh in case.meshes if mesh.get("id") != model_id]
     meshes.append(model)
@@ -928,6 +949,29 @@ async def upload_case_model(
             pass
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="The model metadata could not be saved.")
     return ModelUploadResponse(model=model)
+
+
+@router.get("/cases/{case_id}/models/{model_id}/quality")
+async def get_case_model_quality(
+    case_id: str,
+    model_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """Return persisted mesh quality results without changing the source model."""
+    case = _case_for_user(case_id, authorization)
+    model = next((item for item in case.meshes if item.get("id") == model_id), None)
+    if not model or model.get("isDemoMesh"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The requested model was not found.")
+    quality = model.get("qualityChecks")
+    if not isinstance(quality, dict):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No mesh quality analysis is available.")
+    return {
+        "modelId": model_id,
+        "modelVersion": int(model.get("version", 1)),
+        "sourceSha256": model.get("sha256"),
+        "quality": quality,
+        "clinicalValidation": "not_performed",
+    }
 
 
 @router.get("/cases/{case_id}/models/{model_id}/file")

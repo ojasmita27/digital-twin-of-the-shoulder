@@ -1,574 +1,259 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CTSliceMetadata } from '../../types/case';
-import { DicomSimulator, SliceOrientation, WINDOW_PRESETS } from '../../services/dicomSimulator';
 import { apiClient } from '../../services/apiClient';
-import {
-  ZoomIn,
-  ZoomOut,
-  RotateCcw,
-  Sliders,
-  Crosshair,
-  Maximize2,
-  FileText,
-  Layers,
-  ChevronLeft,
-  ChevronRight,
-  Info,
-} from 'lucide-react';
+import { DicomSimulator, SliceOrientation, WINDOW_PRESETS } from '../../services/dicomSimulator';
+import { ChevronLeft, ChevronRight, Crosshair, FileText, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 
 interface CTViewerProps {
   metadata?: CTSliceMetadata;
   caseId?: string;
   onSliceChange?: (sliceIndex: number) => void;
+  onPatientPositionChange?: (position: [number, number, number] | null) => void;
+  onNavigateToAnatomy?: () => void;
 }
 
-export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceChange }) => {
-  const [orientation, setOrientation] = useState<SliceOrientation>('axial');
-  const [sliceIndices, setSliceIndices] = useState<Record<SliceOrientation, number>>({
-    axial: 1,
-    coronal: 1,
-    sagittal: 1,
-  });
-  const sliceIndex = sliceIndices[orientation];
-  const totalSlices = metadata?.sliceCount || 168;
-  const isRealSeries = Boolean(metadata?.sourceFiles?.length);
-  const [realPreview, setRealPreview] = useState<{ ctPreviewUrl: string; maskPreviewUrl?: string | null } | null>(null);
-  const [showSegmentation, setShowSegmentation] = useState(true);
-  const [segmentationOpacity, setSegmentationOpacity] = useState(0.45);
-  const planeSliceCount = orientation === 'axial'
-    ? totalSlices
-    : orientation === 'coronal'
-      ? metadata?.rows || 1
-      : metadata?.columns || 1;
+type Preview = { ctPreviewUrl: string; maskPreviewUrl?: string | null };
+type Voxel = [number, number, number];
 
+const orientations: SliceOrientation[] = ['axial', 'coronal', 'sagittal'];
+const labels: Record<SliceOrientation, string> = { axial: 'AXIAL', coronal: 'CORONAL', sagittal: 'SAGITTAL' };
+
+function crossProduct(a: number[], b: number[]): number[] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+function patientPoint(voxel: Voxel, metadata: CTSliceMetadata): [number, number, number] | null {
+  if (!metadata.originMm || !metadata.orientationPatient || !metadata.sliceSpacingMm) return null;
+  const row = metadata.orientationPatient.slice(0, 3);
+  const column = metadata.orientationPatient.slice(3, 6);
+  const normal = crossProduct(row, column);
+  const spacing = [metadata.sliceSpacingMm, metadata.pixelSpacingMm[0], metadata.pixelSpacingMm[1]];
+  return [
+    metadata.originMm[0] + normal[0] * voxel[0] * spacing[0] + row[0] * voxel[1] * spacing[1] + column[0] * voxel[2] * spacing[2],
+    metadata.originMm[1] + normal[1] * voxel[0] * spacing[0] + row[1] * voxel[1] * spacing[1] + column[1] * voxel[2] * spacing[2],
+    metadata.originMm[2] + normal[2] * voxel[0] * spacing[0] + row[2] * voxel[1] * spacing[1] + column[2] * voxel[2] * spacing[2],
+  ];
+}
+
+function planeAspect(orientation: SliceOrientation, metadata: CTSliceMetadata): number {
+  const dimensions = metadata.dimensionsVoxels || [metadata.sliceCount, metadata.rows, metadata.columns];
+  const spacing = [metadata.sliceSpacingMm || metadata.sliceThicknessMm, metadata.pixelSpacingMm[0], metadata.pixelSpacingMm[1]];
+  if (orientation === 'axial') return (dimensions[2] * spacing[2]) / (dimensions[1] * spacing[1]);
+  if (orientation === 'coronal') return (dimensions[2] * spacing[2]) / (dimensions[0] * spacing[0]);
+  return (dimensions[1] * spacing[1]) / (dimensions[0] * spacing[0]);
+}
+
+function planeCrosshair(orientation: SliceOrientation, voxel: Voxel, metadata: CTSliceMetadata): [number, number] {
+  const dimensions = metadata.dimensionsVoxels || [metadata.sliceCount, metadata.rows, metadata.columns];
+  const clamp = (value: number, size: number) => size <= 1 ? 0.5 : Math.max(0, Math.min(1, value / (size - 1)));
+  if (orientation === 'axial') return [clamp(voxel[2], dimensions[2]), clamp(voxel[1], dimensions[1])];
+  if (orientation === 'coronal') return [clamp(voxel[2], dimensions[2]), clamp(voxel[0], dimensions[0])];
+  return [clamp(voxel[1], dimensions[1]), clamp(voxel[0], dimensions[0])];
+}
+
+export const CTViewer: React.FC<CTViewerProps> = ({ metadata, caseId, onSliceChange, onPatientPositionChange, onNavigateToAnatomy }) => {
+  const isRealSeries = Boolean(metadata?.sourceFiles?.length && caseId);
+  const dimensions = metadata?.dimensionsVoxels || [metadata?.sliceCount || 1, metadata?.rows || 1, metadata?.columns || 1];
+  const [voxel, setVoxel] = useState<Voxel>([
+    Math.floor(dimensions[0] / 2),
+    Math.floor(dimensions[1] / 2),
+    Math.floor(dimensions[2] / 2),
+  ]);
+  const [previews, setPreviews] = useState<Partial<Record<SliceOrientation, Preview>>>({});
   const [windowWidth, setWindowWidth] = useState(metadata?.windowWidth || 1500);
   const [windowCenter, setWindowCenter] = useState(metadata?.windowCenter || 450);
-  const [activePreset, setActivePreset] = useState<string>('BONE');
-
-  const [zoom, setZoom] = useState(1.0);
+  const [activePreset, setActivePreset] = useState('BONE');
+  const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
-
   const [showCrosshair, setShowCrosshair] = useState(true);
-  const [crosshairPos, setCrosshairPos] = useState({ x: 0.5, y: 0.5 });
-  const [probeInfo, setProbeInfo] = useState<{ x: number; y: number; hu: number; region: string } | null>(null);
-  const [showMetadataDrawer, setShowMetadataDrawer] = useState(false);
-
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [showMetadata, setShowMetadata] = useState(false);
+  const [maskOpacity, setMaskOpacity] = useState(0.45);
+  const [showMask, setShowMask] = useState(true);
+  const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
+  const canvasRefs = useRef<Partial<Record<SliceOrientation, HTMLCanvasElement>>>({});
 
   useEffect(() => {
-    setSliceIndices((current) => ({
-      ...current,
-      [orientation]: Math.min(current[orientation], planeSliceCount),
-    }));
-  }, [planeSliceCount]);
+    if (!metadata) return;
+    const next: Voxel = [
+      Math.max(0, Math.min(dimensions[0] - 1, voxel[0])),
+      Math.max(0, Math.min(dimensions[1] - 1, voxel[1])),
+      Math.max(0, Math.min(dimensions[2] - 1, voxel[2])),
+    ];
+    if (next.some((value, index) => value !== voxel[index])) setVoxel(next);
+  }, [metadata?.seriesInstanceUid, dimensions[0], dimensions[1], dimensions[2]]);
+
+  useEffect(() => {
+    const position = metadata ? patientPoint(voxel, metadata) : null;
+    onPatientPositionChange?.(position);
+    onSliceChange?.(voxel[0] + 1);
+  }, [voxel, metadata, onPatientPositionChange, onSliceChange]);
 
   useEffect(() => {
     let cancelled = false;
     if (!isRealSeries || !caseId) {
-      setRealPreview(null);
+      setPreviews({});
       return;
     }
-    apiClient.getSegmentationPreview(caseId, orientation, Math.max(0, sliceIndex - 1), windowCenter, windowWidth).then((result) => {
-      if (!cancelled) setRealPreview(result.data || null);
+    Promise.all(orientations.map(async (orientation) => {
+      const axis = orientation === 'axial' ? 0 : orientation === 'coronal' ? 1 : 2;
+      const result = await apiClient.getSegmentationPreview(caseId, orientation, voxel[axis], windowCenter, windowWidth);
+      return [orientation, result.data] as const;
+    })).then((entries) => {
+      if (!cancelled) setPreviews(Object.fromEntries(entries.filter((entry) => Boolean(entry[1]))) as Partial<Record<SliceOrientation, Preview>>);
     });
-    return () => {
-      cancelled = true;
+    return () => { cancelled = true; };
+  }, [caseId, isRealSeries, voxel, windowCenter, windowWidth, metadata?.segmentationPreviewAvailable]);
+
+  const drawPreview = (orientation: SliceOrientation) => {
+    const canvas = canvasRefs.current[orientation];
+    if (!canvas) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.fillStyle = '#020617';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const preview = previews[orientation]?.ctPreviewUrl;
+    if (!isRealSeries && metadata) {
+      DicomSimulator.renderSlice(canvas, orientation, voxel[orientation === 'axial' ? 0 : orientation === 'coronal' ? 1 : 2] / Math.max(1, dimensions[orientation === 'axial' ? 0 : orientation === 'coronal' ? 1 : 2] - 1), windowWidth, windowCenter, false, 0.5, 0.5);
+      return;
+    }
+    if (!preview) {
+      context.fillStyle = '#94a3b8';
+      context.font = '13px monospace';
+      context.textAlign = 'center';
+      context.fillText('Loading patient CT...', 256, 256);
+      return;
+    }
+    const image = new Image();
+    image.onload = () => {
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const maskUrl = previews[orientation]?.maskPreviewUrl;
+      if (showMask && maskUrl) {
+        const mask = new Image();
+        mask.onload = () => {
+          context.globalAlpha = maskOpacity;
+          context.drawImage(mask, 0, 0, canvas.width, canvas.height);
+          context.globalAlpha = 1;
+        };
+        mask.src = maskUrl;
+      }
     };
-  }, [caseId, isRealSeries, orientation, sliceIndex, windowCenter, windowWidth, metadata?.segmentationPreviewAvailable]);
-
-  // Render slice to canvas when slice, orientation, window/level, or crosshair changes
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const previewUrl = realPreview?.ctPreviewUrl
-      || (orientation === 'axial'
-        ? metadata?.slicePreviewUrls?.[sliceIndex - 1] || metadata?.primaryPreviewUrl
-        : undefined);
-    if (previewUrl) {
-      const img = new Image();
-      img.onload = () => {
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-        ctx.fillStyle = '#020617';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        // Aspect-ratio preserved centering
-        const scale = Math.min(canvas.width / img.width, canvas.height / img.height);
-        const w = img.width * scale;
-        const h = img.height * scale;
-        const x = (canvas.width - w) / 2;
-        const y = (canvas.height - h) / 2;
-        ctx.drawImage(img, x, y, w, h);
-        if (showSegmentation && realPreview?.maskPreviewUrl) {
-          const maskImage = new Image();
-          maskImage.onload = () => {
-            ctx.globalAlpha = segmentationOpacity;
-            ctx.drawImage(maskImage, 0, 0, canvas.width, canvas.height);
-            ctx.globalAlpha = 1;
-          };
-          maskImage.src = realPreview.maskPreviewUrl;
-        }
-
-        if (showCrosshair) {
-          ctx.strokeStyle = 'rgba(6, 182, 212, 0.6)';
-          ctx.lineWidth = 1;
-          const cx = crosshairPos.x * canvas.width;
-          const cy = crosshairPos.y * canvas.height;
-          ctx.beginPath();
-          ctx.moveTo(cx, 0);
-          ctx.lineTo(cx, canvas.height);
-          ctx.moveTo(0, cy);
-          ctx.lineTo(canvas.width, cy);
-          ctx.stroke();
-        }
-      };
-      img.src = previewUrl;
-    } else if (isRealSeries && !realPreview) {
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.fillStyle = '#020617';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '14px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`Loading ${orientation.toUpperCase()} CT preview...`, canvas.width / 2, canvas.height / 2);
-    } else {
-      const normalizedSlice = Math.max(0, Math.min(1, sliceIndex / planeSliceCount));
-      DicomSimulator.renderSlice(
-        canvas,
-        orientation,
-        normalizedSlice,
-        windowWidth,
-        windowCenter,
-        showCrosshair,
-        crosshairPos.x,
-        crosshairPos.y
-      );
-    }
-  }, [
-    orientation,
-    sliceIndex,
-    totalSlices,
-    windowWidth,
-    windowCenter,
-    showCrosshair,
-    crosshairPos,
-    metadata?.primaryPreviewUrl,
-    metadata?.slicePreviewUrls,
-    isRealSeries,
-    realPreview,
-    showSegmentation,
-    segmentationOpacity,
-    planeSliceCount,
-  ]);
-
-  // Handle Preset change
-  const handlePresetSelect = (presetKey: string) => {
-    const p = WINDOW_PRESETS[presetKey];
-    if (p) {
-      setActivePreset(presetKey);
-      setWindowWidth(p.windowWidth);
-      setWindowCenter(p.windowCenter);
-    }
+    image.src = preview;
   };
 
-  // Mouse wheel slice scrolling
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = Math.sign(e.deltaY);
-    setSliceIndices((current) => {
-      const prev = current[orientation];
-      const next = Math.max(1, Math.min(planeSliceCount, prev + delta));
-      if (onSliceChange) onSliceChange(next);
-      return { ...current, [orientation]: next };
+  useEffect(() => {
+    orientations.forEach(drawPreview);
+  }, [previews, voxel, windowWidth, windowCenter, maskOpacity, showMask, isRealSeries, metadata?.seriesInstanceUid]);
+
+  const updateVoxel = (orientation: SliceOrientation, delta: number) => {
+    const axis = orientation === 'axial' ? 0 : orientation === 'coronal' ? 1 : 2;
+    setVoxel((current) => {
+      const next = [...current] as Voxel;
+      next[axis] = Math.max(0, Math.min(dimensions[axis] - 1, next[axis] + delta));
+      return next;
     });
   };
 
-  // Canvas Pan Handlers
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 0) {
-      // Left click pan
-      setIsPanning(true);
-      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-    }
+  const handleCanvasClick = (event: React.MouseEvent<HTMLCanvasElement>, orientation: SliceOrientation) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = (event.clientX - rect.left) / rect.width;
+    const y = (event.clientY - rect.top) / rect.height;
+    const aspect = planeAspect(orientation, metadata!);
+    const contentWidth = aspect >= 1 ? 1 : aspect;
+    const contentHeight = aspect >= 1 ? 1 / aspect : 1;
+    const left = (1 - contentWidth) / 2;
+    const top = (1 - contentHeight) / 2;
+    if (x < left || x > left + contentWidth || y < top || y > top + contentHeight) return;
+    const px = (x - left) / contentWidth;
+    const py = (y - top) / contentHeight;
+    setVoxel((current) => {
+      const next = [...current] as Voxel;
+      if (orientation === 'axial') { next[2] = Math.round(px * (dimensions[2] - 1)); next[1] = Math.round(py * (dimensions[1] - 1)); }
+      if (orientation === 'coronal') { next[2] = Math.round(px * (dimensions[2] - 1)); next[0] = Math.round(py * (dimensions[0] - 1)); }
+      if (orientation === 'sagittal') { next[1] = Math.round(px * (dimensions[1] - 1)); next[0] = Math.round(py * (dimensions[0] - 1)); }
+      return next;
+    });
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-
-    if (isPanning) {
-      setPan({
-        x: e.clientX - panStart.x,
-        y: e.clientY - panStart.y,
-      });
-    }
-
-    setCrosshairPos({ x: nx, y: ny });
-
-    // Estimate Hounsfield Unit at cursor position
-    const pixelX = Math.round(nx * (metadata?.columns || 512));
-    const pixelY = Math.round(ny * (metadata?.rows || 512));
-
-    if (isRealSeries) {
-      setProbeInfo(null);
-      return;
-    }
-
-    // Demo-only probe for the synthetic reference case.
-    let estimatedHU = -950;
-    let region = 'Air / Background';
-    const distToCenter = Math.hypot(nx - 0.5, ny - 0.5);
-
-    if (distToCenter < 0.12) {
-      estimatedHU = 1280;
-      region = 'Glenoid / Humeral Cortex';
-    } else if (distToCenter < 0.22) {
-      estimatedHU = 320;
-      region = 'Cancellous Trabeculae';
-    } else if (distToCenter < 0.42) {
-      estimatedHU = 42;
-      region = 'Deltoid / Rotator Cuff';
-    }
-
-    setProbeInfo({ x: pixelX, y: pixelY, hu: estimatedHU, region });
-  };
-
-  const handleMouseUp = () => {
-    setIsPanning(false);
-  };
-
-  const handleResetZoomPan = () => {
-    setZoom(1.0);
+  const resetView = () => {
+    setZoom(1);
     setPan({ x: 0, y: 0 });
+    setVoxel([Math.floor(dimensions[0] / 2), Math.floor(dimensions[1] / 2), Math.floor(dimensions[2] / 2)]);
   };
 
-  if (!metadata) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full min-h-[460px] p-8 text-center bg-slate-900/50 border border-slate-800 rounded-lg">
-        <Layers className="w-10 h-10 text-slate-600 mb-3" />
-        <h3 className="text-sm font-semibold text-slate-200">No CT Series Loaded</h3>
-        <p className="text-xs text-slate-500 max-w-sm mt-1 mb-4">
-          Upload a DICOM series or select a study to inspect cross-sectional anatomy in multi-planar views.
-        </p>
-      </div>
-    );
-  }
+  const selectedPosition = metadata ? patientPoint(voxel, metadata) : null;
+  const selectedText = selectedPosition ? selectedPosition.map((value) => value.toFixed(2)).join(', ') : 'Unavailable';
 
   return (
-    <div
-      ref={containerRef}
-      className="relative flex flex-col h-full min-h-[560px] bg-slate-950 border border-slate-800 rounded-lg overflow-hidden select-none"
-    >
-      {/* Top Telemetry & Controls Bar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800 text-xs">
-        {/* Orientation Tabs */}
-        <div className="flex items-center gap-1">
-          <span className="text-[11px] text-slate-500 font-mono mr-1">PLANE:</span>
-          {(['axial', 'coronal', 'sagittal'] as SliceOrientation[]).map((plane) => (
-            <button
-              key={plane}
-              onClick={() => setOrientation(plane)}
-              className={`px-2.5 py-1 rounded text-xs font-medium uppercase transition-colors ${
-                orientation === plane
-                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-              }`}
-            >
-              {plane}
-            </button>
+    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 overflow-hidden">
+      <div className="flex flex-wrap items-center gap-2 p-3 border-b border-slate-200 dark:border-slate-800 text-xs">
+        <div className="flex gap-1">
+          {Object.entries(WINDOW_PRESETS).map(([key, preset]) => (
+            <button key={key} type="button" onClick={() => { setActivePreset(key); setWindowWidth(preset.windowWidth); setWindowCenter(preset.windowCenter); }} className={`px-2 py-1 rounded ${activePreset === key ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>{key}</button>
           ))}
         </div>
-
-        {/* Window/Level Preset Selectors */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] text-slate-500 font-mono">W/L:</span>
-          {Object.keys(WINDOW_PRESETS).map((key) => (
-            <button
-              key={key}
-              onClick={() => handlePresetSelect(key)}
-              className={`px-2 py-0.5 rounded text-[11px] font-mono transition-colors ${
-                activePreset === key
-                  ? 'bg-slate-800 text-slate-100 border border-slate-700'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              {key}
-            </button>
-          ))}
-        </div>
-
-        {/* Viewport Action Icons */}
-        <div className="flex items-center gap-1">
-          {isRealSeries && realPreview?.maskPreviewUrl && (
-            <button
-              onClick={() => setShowSegmentation((visible) => !visible)}
-              className={`px-2 py-0.5 rounded text-[11px] font-mono ${showSegmentation ? 'bg-amber-500/20 text-amber-300' : 'text-slate-400'}`}
-              title="Toggle saved segmentation overlay"
-            >
-              MASK {showSegmentation ? 'ON' : 'OFF'}
-            </button>
-          )}
-          <button
-            onClick={() => setZoom((z) => Math.min(3.0, z + 0.2))}
-            className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
-            title="Zoom In"
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setZoom((z) => Math.max(0.5, z - 0.2))}
-            className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
-            title="Zoom Out"
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={handleResetZoomPan}
-            className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
-            title="Reset Pan/Zoom"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setShowCrosshair(!showCrosshair)}
-            className={`p-1 rounded ${showCrosshair ? 'text-cyan-400 bg-cyan-500/10' : 'text-slate-400 hover:text-slate-200'}`}
-            title="Toggle Crosshairs"
-          >
-            <Crosshair className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setShowMetadataDrawer(!showMetadataDrawer)}
-            className={`p-1 rounded ${showMetadataDrawer ? 'text-cyan-400 bg-cyan-500/10' : 'text-slate-400 hover:text-slate-200'}`}
-            title="DICOM Metadata Inspector"
-          >
-            <FileText className="w-3.5 h-3.5" />
-          </button>
-        </div>
+        <label className="flex items-center gap-1 text-slate-500">W <input className="w-16 px-1 border rounded bg-transparent" type="number" value={windowWidth} onChange={(event) => { setActivePreset('CUSTOM'); setWindowWidth(Math.max(1, Number(event.target.value))); }} /></label>
+        <label className="flex items-center gap-1 text-slate-500">L <input className="w-16 px-1 border rounded bg-transparent" type="number" value={windowCenter} onChange={(event) => { setActivePreset('CUSTOM'); setWindowCenter(Number(event.target.value)); }} /></label>
+        <button type="button" onClick={() => setZoom((value) => Math.min(4, value + 0.25))} title="Zoom in"><ZoomIn className="w-4 h-4" /></button>
+        <button type="button" onClick={() => setZoom((value) => Math.max(0.5, value - 0.25))} title="Zoom out"><ZoomOut className="w-4 h-4" /></button>
+        <button type="button" onClick={resetView} title="Fit and reset"><RotateCcw className="w-4 h-4" /></button>
+        <button type="button" onClick={() => setShowCrosshair((value) => !value)} className={showCrosshair ? 'text-cyan-600' : 'text-slate-400'} title="Toggle synchronized crosshair"><Crosshair className="w-4 h-4" /></button>
+        <button type="button" onClick={() => setShowMetadata((value) => !value)} className="ml-auto" title="DICOM geometry"><FileText className="w-4 h-4" /></button>
       </div>
-
-      {/* Center Image Stage */}
-      <div
-        className="flex-1 relative flex items-center justify-center bg-black overflow-hidden cursor-crosshair"
-        onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-      >
-        {/* Medical Canvas */}
-        <div
-          style={{
-            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-            transformOrigin: 'center center',
-            transition: isPanning ? 'none' : 'transform 0.05s ease-out',
-          }}
-        >
-          <canvas
-            ref={canvasRef}
-            width={512}
-            height={512}
-            className="w-[480px] h-[480px] object-contain shadow-2xl"
-          />
-        </div>
-
-        {/* Anatomical Orientation Watermarks */}
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 text-slate-400 text-xs font-mono font-bold tracking-widest pointer-events-none">
-          {orientation === 'axial' ? 'ANTERIOR' : 'SUPERIOR'}
-        </div>
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-slate-400 text-xs font-mono font-bold tracking-widest pointer-events-none">
-          {orientation === 'axial' ? 'POSTERIOR' : 'INFERIOR'}
-        </div>
-        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-mono font-bold tracking-widest pointer-events-none">
-          {orientation === 'sagittal' ? 'ANTERIOR' : 'RIGHT'}
-        </div>
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-mono font-bold tracking-widest pointer-events-none">
-          {orientation === 'sagittal' ? 'POSTERIOR' : 'LEFT'}
-        </div>
-
-        {/* Top-Left Telemetry Overlay */}
-        <div className="absolute top-3 left-3 bg-slate-900/80 border border-slate-800 p-2 rounded text-[11px] font-mono text-slate-300 pointer-events-none space-y-0.5">
-          <div>
-            SLICE: <span className="text-cyan-400">{sliceIndex}</span> / {planeSliceCount}
-          </div>
-          <div>
-            THICKNESS: <span className="text-slate-100">{metadata.sliceThicknessMm.toFixed(2)} mm</span>
-          </div>
-          <div>
-            SPACING: <span className="text-slate-100">{metadata.pixelSpacingMm[0].toFixed(3)} mm</span>
-          </div>
-          <div>
-            ZOOM: <span className="text-slate-100">{(zoom * 100).toFixed(0)}%</span>
-          </div>
-        </div>
-
-        {/* Bottom-Left Live HU Probe Overlay */}
-        {probeInfo && (
-          <div className="absolute bottom-3 left-3 bg-slate-900/85 border border-slate-800 p-2 rounded text-[11px] font-mono pointer-events-none">
-            <div className="text-slate-400">
-              PIXEL: [{probeInfo.x}, {probeInfo.y}]
-            </div>
-            <div className="text-cyan-400 font-semibold">
-              VALUE: {probeInfo.hu} HU <span className="text-slate-400 font-normal">({probeInfo.region})</span>
-            </div>
-          </div>
-        )}
-
-        {/* Bottom-Right Window/Level Overlay */}
-        <div className="absolute bottom-3 right-3 bg-slate-900/80 border border-slate-800 p-2 rounded text-[11px] font-mono text-slate-300 pointer-events-none text-right">
-          <div>
-            W: <span className="text-cyan-400">{windowWidth}</span>
-          </div>
-          <div>
-            L: <span className="text-cyan-400">{windowCenter}</span>
-          </div>
-          <div className="text-[10px] text-slate-500">KERNEL: {metadata.reconstructionKernel}</div>
-        </div>
-        {isRealSeries && realPreview?.maskPreviewUrl && showSegmentation && (
-          <label className="absolute bottom-20 right-3 bg-slate-900/90 border border-slate-800 p-2 rounded text-[11px] font-mono text-slate-300 flex items-center gap-2">
-            MASK OPACITY
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={segmentationOpacity}
-              onChange={(event) => setSegmentationOpacity(Number(event.target.value))}
-            />
-          </label>
-        )}
-
-        {/* Slide-out Technical DICOM Metadata Drawer */}
-        {showMetadataDrawer && (
-          <div className="absolute top-0 right-0 bottom-0 w-72 bg-slate-900/95 border-l border-slate-800 p-4 overflow-y-auto text-xs z-30 shadow-2xl">
-            <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-800">
-              <span className="font-semibold text-slate-200">DICOM Attributes</span>
-              <button
-                onClick={() => setShowMetadataDrawer(false)}
-                className="text-slate-500 hover:text-slate-300 text-sm font-bold"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-2 text-[11px] font-mono text-slate-400">
-              <div>
-                <span className="text-slate-500">Modality:</span> {metadata.modality}
-              </div>
-              <div>
-                <span className="text-slate-500">Matrix:</span> {metadata.columns} × {metadata.rows}
-              </div>
-              <div>
-                <span className="text-slate-500">Slice Thickness:</span> {metadata.sliceThicknessMm} mm
-              </div>
-              <div>
-                <span className="text-slate-500">Pixel Spacing:</span> {metadata.pixelSpacingMm[0]} ×{' '}
-                {metadata.pixelSpacingMm[1]} mm
-              </div>
-              <div>
-                <span className="text-slate-500">Tube Voltage:</span> {metadata.kvp} kVp
-              </div>
-              <div>
-                <span className="text-slate-500">Tube Current:</span> {metadata.tubeCurrentMa} mA
-              </div>
-              <div>
-                <span className="text-slate-500">Gantry Tilt:</span> {metadata.gantryTiltDeg}°
-              </div>
-              <div>
-                <span className="text-slate-500">Kernel:</span> {metadata.reconstructionKernel}
-              </div>
-              <div className="break-all">
-                <span className="text-slate-500">Series UID:</span> {metadata.seriesInstanceUid}
-              </div>
-              <div className="break-all">
-                <span className="text-slate-500">Study UID:</span> {metadata.studyInstanceUid}
-              </div>
-            </div>
-          </div>
-        )}
+      <div className="px-3 py-2 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] font-mono text-slate-500 border-b border-slate-200 dark:border-slate-800">
+        <span>Patient LPS: [{selectedText}]</span>
+        <span>Voxel: [{voxel.join(', ')}] / [{dimensions.join(' × ')}]</span>
+        <span>Spacing: {metadata?.sliceSpacingMm?.toFixed(2) || '—'} × {metadata?.pixelSpacingMm?.map((value) => value.toFixed(2)).join(' × ') || '—'} mm</span>
       </div>
-
-      {/* Bottom Slice Navigation Rail */}
-      <div className="flex items-center justify-between gap-4 px-4 py-2.5 bg-slate-900 border-t border-slate-800 text-xs">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setSliceIndices((current) => ({
-              ...current,
-              [orientation]: Math.max(1, current[orientation] - 1),
-            }))}
-            className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
-          >
-            <ChevronLeft className="w-4 h-4" />
-          </button>
-          <span className="font-mono text-slate-300 text-xs tabular-nums">
-            {sliceIndex} / {planeSliceCount}
-          </span>
-          <button
-            onClick={() => setSliceIndices((current) => ({
-              ...current,
-              [orientation]: Math.min(planeSliceCount, current[orientation] + 1),
-            }))}
-            className="p-1 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Slice Slider */}
-        <div className="flex-1 max-w-xl mx-4 flex items-center gap-3">
-          <span className="text-[11px] text-slate-500 font-mono">INDEX:</span>
-          <input
-            type="range"
-            min="1"
-            max={planeSliceCount}
-            value={sliceIndex}
-            onChange={(e) => {
-              const val = Number(e.target.value);
-              setSliceIndices((current) => ({ ...current, [orientation]: val }));
-              if (onSliceChange) onSliceChange(val);
-            }}
-            className="flex-1 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-          />
-        </div>
-
-        {/* Manual Window/Level Sliders */}
-        <div className="flex items-center gap-3 text-[11px] font-mono text-slate-400">
-          <div className="flex items-center gap-1.5">
-            <span>W:</span>
-            <input
-              type="range"
-              min="100"
-              max="4000"
-              value={windowWidth}
-              onChange={(e) => setWindowWidth(Number(e.target.value))}
-              className="w-16 h-1 bg-slate-800"
-            />
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span>L:</span>
-            <input
-              type="range"
-              min="-1000"
-              max="1500"
-              value={windowCenter}
-              onChange={(e) => setWindowCenter(Number(e.target.value))}
-              className="w-16 h-1 bg-slate-800"
-            />
-          </div>
-        </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-px bg-slate-200 dark:bg-slate-800">
+        {orientations.map((orientation) => {
+          const axis = orientation === 'axial' ? 0 : orientation === 'coronal' ? 1 : 2;
+          const [crossX, crossY] = metadata ? planeCrosshair(orientation, voxel, metadata) : [0.5, 0.5];
+          const aspect = metadata ? planeAspect(orientation, metadata) : 1;
+          const contentWidth = aspect >= 1 ? 1 : aspect;
+          const contentHeight = aspect >= 1 ? 1 / aspect : 1;
+          const displayCrossX = (1 - contentWidth) / 2 + crossX * contentWidth;
+          const displayCrossY = (1 - contentHeight) / 2 + crossY * contentHeight;
+          return (
+            <div key={orientation} className="relative bg-black min-w-0">
+              <div className="absolute z-10 top-2 left-2 right-2 flex justify-between text-[11px] font-mono text-slate-300 pointer-events-none">
+                <span>{labels[orientation]}</span><span>{voxel[axis] + 1} / {dimensions[axis]}</span>
+              </div>
+              <canvas
+                ref={(element) => { canvasRefs.current[orientation] = element || undefined; }}
+                width={512}
+                height={512}
+                onClick={(event) => metadata && handleCanvasClick(event, orientation)}
+                onWheel={(event) => { event.preventDefault(); updateVoxel(orientation, Math.sign(event.deltaY)); }}
+                onMouseDown={(event) => setDrag({ x: event.clientX - pan.x, y: event.clientY - pan.y })}
+                onMouseMove={(event) => { if (drag) setPan({ x: event.clientX - drag.x, y: event.clientY - drag.y }); }}
+                onMouseUp={() => setDrag(null)}
+                onMouseLeave={() => setDrag(null)}
+                className="w-full aspect-square object-contain cursor-crosshair"
+                style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+              />
+              {showCrosshair && <div className="absolute pointer-events-none inset-0" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
+                <span className="absolute top-0 bottom-0 w-px bg-cyan-400/70" style={{ left: `${displayCrossX * 100}%` }} />
+                <span className="absolute left-0 right-0 h-px bg-cyan-400/70" style={{ top: `${displayCrossY * 100}%` }} />
+              </div>}
+              <div className="absolute bottom-2 left-2 right-2 flex justify-between">
+                <button type="button" onClick={() => updateVoxel(orientation, -1)} className="p-1 rounded bg-slate-900/80 text-white"><ChevronLeft className="w-4 h-4" /></button>
+                <button type="button" onClick={() => updateVoxel(orientation, 1)} className="p-1 rounded bg-slate-900/80 text-white"><ChevronRight className="w-4 h-4" /></button>
+              </div>
+            </div>
+          );
+        })}
       </div>
+      <div className="flex flex-wrap items-center gap-3 p-3 text-xs text-slate-500">
+        {isRealSeries && Object.values(previews).some((preview) => preview?.maskPreviewUrl) && <label className="flex items-center gap-2"><input type="checkbox" checked={showMask} onChange={(event) => setShowMask(event.target.checked)} /> Mask overlay <input type="range" min="0" max="1" step="0.05" value={maskOpacity} onChange={(event) => setMaskOpacity(Number(event.target.value))} /></label>}
+        {onNavigateToAnatomy && <button type="button" onClick={onNavigateToAnatomy} className="ml-auto text-cyan-600 hover:underline">Open synchronized 3D workspace</button>}
+      </div>
+      {showMetadata && <div className="p-3 border-t border-slate-200 dark:border-slate-800 text-[11px] font-mono text-slate-500 space-y-1">
+        <div>Coordinate system: {metadata?.coordinateSystem || 'Unavailable'}</div>
+        <div>Origin: [{metadata?.originMm?.join(', ') || 'Unavailable'}] mm</div>
+        <div>Direction cosines: [{metadata?.orientationPatient?.join(', ') || 'Unavailable'}]</div>
+        <div>Window/Level: {windowWidth} / {windowCenter} HU</div>
+        <div>Registration to 3D model: {metadata?.coordinateSystem === 'DICOM patient LPS' ? 'available when model provenance matches' : 'unavailable'}</div>
+      </div>}
     </div>
   );
 };

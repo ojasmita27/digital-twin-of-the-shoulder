@@ -10,6 +10,7 @@ import backend.app.dependencies as deps_module
 import backend.app.routers.cases as cases_router
 import backend.app.routers.auth as auth_router
 import backend.app.routers.models as models_router
+import backend.app.routers.research as research_router
 from backend.app.config import settings
 from backend.app.models.case import CaseCreateRequest, PatientDemographics, AnatomicalSide
 
@@ -31,12 +32,14 @@ def isolated_test_database(monkeypatch, tmp_path):
     orig_deps_store = deps_module.case_store
     orig_auth_store = auth_router.case_store
     orig_models_store = models_router.case_store
+    orig_research_store = research_router.case_store
 
     storage_module.case_store = test_store
     cases_router.case_store = test_store
     deps_module.case_store = test_store
     auth_router.case_store = test_store
     models_router.case_store = test_store
+    research_router.case_store = test_store
     monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path))
 
     yield test_store
@@ -46,6 +49,7 @@ def isolated_test_database(monkeypatch, tmp_path):
     deps_module.case_store = orig_deps_store
     auth_router.case_store = orig_auth_store
     models_router.case_store = orig_models_store
+    research_router.case_store = orig_research_store
     if os.path.exists(temp_db_path):
         try:
             os.remove(temp_db_path)
@@ -218,6 +222,41 @@ def test_model_upload_requires_case_access(auth_headers, isolated_test_database)
     )
     assert response.status_code == 400
     assert "supported" in response.json()["detail"].lower()
+
+
+def test_model_quality_and_research_exports(auth_headers):
+    payload = {
+        "name": "Quality Export Subject",
+        "demographics": {
+            "researchSubjectId": "QUALITY-001",
+            "ageBand": "41-60",
+            "biologicalSex": "undisclosed",
+            "indication": "Research Normative",
+            "affectedSide": "right",
+        },
+    }
+    case_id = client.post("/api/cases", json=payload, headers=auth_headers).json()["id"]
+    obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+    model_response = client.post(
+        f"/api/cases/{case_id}/models",
+        files={"file": ("shoulder.obj", obj, "text/plain")},
+        headers=auth_headers,
+    )
+    assert model_response.status_code == 201
+    model_id = model_response.json()["model"]["id"]
+    quality = client.get(f"/api/cases/{case_id}/models/{model_id}/quality", headers=auth_headers)
+    assert quality.status_code == 200
+    assert quality.json()["quality"]["boundaryEdgeCount"] == 3
+
+    analytics = client.get("/api/research/analytics", headers=auth_headers)
+    assert analytics.status_code == 200
+    assert analytics.json()["modelStatus"]["modelCount"] == 1
+    csv_export = client.get(f"/api/research/cases/{case_id}/measurements.csv", headers=auth_headers)
+    assert csv_export.status_code == 200
+    assert "displayDistance" in csv_export.text
+    planning_export = client.get(f"/api/research/cases/{case_id}/planning.json", headers=auth_headers)
+    assert planning_export.status_code == 200
+    assert planning_export.json()["caseId"] == case_id
 
 
 def test_glb_implant_library_and_version_lifecycle(auth_headers):

@@ -81,6 +81,7 @@ class SqliteCaseStore:
                     planning_measurements_json TEXT NOT NULL DEFAULT '[]',
                     implant_plan_json TEXT,
                     planning_versions_json TEXT NOT NULL DEFAULT '[]',
+                    registration_json TEXT,
                     implant_assets_json TEXT NOT NULL DEFAULT '[]',
                     implant_reference_points_json TEXT NOT NULL DEFAULT '[]',
                     reports_json TEXT NOT NULL DEFAULT '[]',
@@ -101,6 +102,8 @@ class SqliteCaseStore:
                 cursor.execute("ALTER TABLE cases ADD COLUMN viewer_preferences_json TEXT")
             if "planning_versions_json" not in existing_columns:
                 cursor.execute("ALTER TABLE cases ADD COLUMN planning_versions_json TEXT NOT NULL DEFAULT '[]'")
+            if "registration_json" not in existing_columns:
+                cursor.execute("ALTER TABLE cases ADD COLUMN registration_json TEXT")
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_cases_created_at ON cases(created_at DESC)"
             )
@@ -671,6 +674,11 @@ class SqliteCaseStore:
             if "planning_measurements_json" in row.keys() and row["planning_measurements_json"]
             else []
         )
+        registration = (
+            json.loads(row["registration_json"])
+            if "registration_json" in row.keys() and row["registration_json"]
+            else None
+        )
         reports = json.loads(row["reports_json"]) if row["reports_json"] else []
         viewer_preferences = (
             json.loads(row["viewer_preferences_json"])
@@ -698,6 +706,7 @@ class SqliteCaseStore:
             implantAssets=implant_assets,
             implantReferencePoints=implant_reference_points,
             planningMeasurements=planning_measurements,
+            registration=registration,
             reports=reports,
             viewerPreferences=viewer_preferences,
             createdByUserId=created_by_user_id,
@@ -869,6 +878,9 @@ class SqliteCaseStore:
         planning_versions = updates.get("planningVersions", existing.planningVersions)
         planning_versions_json = json.dumps(planning_versions) if planning_versions is not None else "[]"
 
+        registration = updates.get("registration", existing.registration)
+        registration_json = json.dumps(registration) if registration is not None else None
+
         implant_assets = updates.get("implantAssets", existing.implantAssets)
         implant_assets_json = json.dumps(implant_assets) if implant_assets is not None else "[]"
 
@@ -902,6 +914,7 @@ class SqliteCaseStore:
                     measurements_json = ?,
                     implant_plan_json = ?,
                     planning_versions_json = ?,
+                    registration_json = ?,
                     implant_assets_json = ?,
                     implant_reference_points_json = ?,
                     planning_measurements_json = ?,
@@ -923,6 +936,7 @@ class SqliteCaseStore:
                     measurements_json,
                     implant_plan_json,
                     planning_versions_json,
+                    registration_json,
                     implant_assets_json,
                     implant_reference_points_json,
                     planning_measurements_json,

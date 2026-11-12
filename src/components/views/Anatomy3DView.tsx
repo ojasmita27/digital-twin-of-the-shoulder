@@ -24,11 +24,15 @@ import {
 interface Anatomy3DViewProps {
   activeCase: ResearchCase | null;
   onUpdateCaseLandmarks?: (landmarks: AnatomicalLandmark[]) => void;
+  patientPosition?: [number, number, number] | null;
+  patientPositionValid?: boolean;
 }
 
 export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
   activeCase,
   onUpdateCaseLandmarks,
+  patientPosition = null,
+  patientPositionValid = false,
 }) => {
   const [selectedLandmark, setSelectedLandmark] = useState<AnatomicalLandmark | null>(null);
   const [customMeshInfo, setCustomMeshInfo] = useState<LoadedMeshResult | null>(null);
@@ -917,6 +921,8 @@ export const Anatomy3DView: React.FC<Anatomy3DViewProps> = ({
             glenoidColor={glenoidColor}
             glenoidOpacity={glenoidOpacity}
             glenoidVisible={viewerPreferences.glenoidVisible}
+            patientPosition={patientPosition}
+            patientPositionValid={patientPositionValid && savedModel?.coordinateSystem === 'DICOM patient LPS'}
             customModelName={savedModel?.filename || 'restored-model.stl'}
             unitScale={savedModel?.unit || 'unknown'}
             scapulaVisible={viewerPreferences.scapulaVisible}

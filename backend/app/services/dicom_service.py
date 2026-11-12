@@ -11,6 +11,7 @@ import math
 import os
 import struct
 import uuid
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -31,6 +32,64 @@ except ImportError:
 class DicomValidationError(ValueError):
     """Raised when an uploaded file is not a valid or readable DICOM."""
     pass
+
+
+_VOLUME_CACHE: "OrderedDict[Tuple[str, ...], Tuple[Tuple[int, ...], Any, Dict[str, Any]]]" = OrderedDict()
+_VOLUME_CACHE_LIMIT = 2
+
+
+def voxel_to_patient(
+    voxel: Tuple[float, float, float],
+    origin_mm: List[float],
+    orientation: List[float],
+    spacing_mm: List[float],
+) -> List[float]:
+    """Map volume indices [slice,row,column] into DICOM patient LPS millimetres."""
+    row = np.asarray(orientation[:3], dtype=np.float64)
+    column = np.asarray(orientation[3:], dtype=np.float64)
+    normal = np.cross(row, column)
+    index = np.asarray(voxel, dtype=np.float64)
+    point = np.asarray(origin_mm, dtype=np.float64) + (
+        normal * index[0] * float(spacing_mm[0])
+        + row * index[1] * float(spacing_mm[1])
+        + column * index[2] * float(spacing_mm[2])
+    )
+    return [round(float(value), 5) for value in point]
+
+
+def patient_to_voxel(
+    patient_mm: List[float],
+    origin_mm: List[float],
+    orientation: List[float],
+    spacing_mm: List[float],
+) -> List[float]:
+    """Map DICOM patient LPS millimetres into fractional [slice,row,column] indices."""
+    row = np.asarray(orientation[:3], dtype=np.float64)
+    column = np.asarray(orientation[3:], dtype=np.float64)
+    normal = np.cross(row, column)
+    basis = np.column_stack((normal, row, column))
+    coordinates = np.linalg.solve(basis, np.asarray(patient_mm, dtype=np.float64) - np.asarray(origin_mm, dtype=np.float64))
+    return [round(float(coordinates[index] / float(spacing_mm[index])), 5) for index in range(3)]
+
+
+def volume_plane_geometry(analysis: Dict[str, Any]) -> Dict[str, Any]:
+    dimensions = [int(value) for value in analysis["volumeDimensionsVoxels"]]
+    origin = analysis.get("originMm")
+    orientation = analysis.get("orientation")
+    spacing = analysis.get("spacingMm")
+    valid = bool(origin and orientation and spacing)
+    return {
+        "coordinateSystem": "DICOM patient LPS" if valid else "unavailable",
+        "originMm": [float(value) for value in origin] if origin else None,
+        "orientationPatient": [float(value) for value in orientation] if orientation else None,
+        "spacingMm": [float(value) for value in spacing] if spacing else None,
+        "dimensionsVoxels": dimensions,
+        "planes": {
+            "axial": {"sliceCount": dimensions[0], "rowAxis": "row", "columnAxis": "column"},
+            "coronal": {"sliceCount": dimensions[1], "rowAxis": "slice", "columnAxis": "column"},
+            "sagittal": {"sliceCount": dimensions[2], "rowAxis": "slice", "columnAxis": "row"},
+        },
+    }
 
 
 def validate_dicom_preamble(file_bytes: bytes) -> bool:
@@ -458,6 +517,17 @@ def analyze_dicom_series(
         "volumeDimensionsMm": [x_span_mm, y_span_mm, z_span_mm],
         "hasGaps": has_gaps,
         "gapWarnings": gap_warnings,
+        "orientationValidation": {
+            "valid": True,
+            "imageOrientationPatient": [float(value) for value in first_orientation],
+            "patientCoordinateSystem": "LPS",
+        },
+        "spacingValidation": {
+            "valid": True,
+            "pixelSpacingMm": [float(value) for value in primary_meta["pixelSpacingMm"]],
+            "sliceSpacingMm": round(nominal_spacing, 3),
+            "sliceThicknessMm": float(primary_meta["sliceThicknessMm"]),
+        },
         "isVolumetricSeries": is_volumetric,
         "reconstructionReadiness": readiness,
         "reconstructionMessage": recon_msg,
@@ -470,6 +540,12 @@ def load_volume_from_files(
     """Load an ordered CT volume and its physical geometry from unchanged DICOM files."""
     if not PYDICOM_AVAILABLE or not IMAGING_AVAILABLE:
         raise DicomValidationError("pydicom and numpy are required for CT volume reconstruction.")
+    cache_key = tuple(os.path.abspath(path) for path in file_paths)
+    cache_signature = tuple(os.stat(path).st_mtime_ns for path in cache_key)
+    cached = _VOLUME_CACHE.get(cache_key)
+    if cached and cached[0] == cache_signature:
+        _VOLUME_CACHE.move_to_end(cache_key)
+        return cached[1], dict(cached[2])
     parsed: List[Tuple[Dict[str, Any], Optional[str]]] = []
     datasets: Dict[str, Any] = {}
     for path in file_paths:
@@ -492,10 +568,16 @@ def load_volume_from_files(
     analysis["originMm"] = ordered[0][0].get("imagePositionPatient")
     analysis["orientation"] = ordered[0][0].get("imageOrientationPatient")
     analysis["spacingMm"] = [
-        float(ordered[0][0]["sliceSpacingMm"]) if "sliceSpacingMm" in ordered[0][0] else float(analysis["sliceSpacingMm"]),
+        float(analysis["sliceSpacingMm"]),
         float(ordered[0][0]["pixelSpacingMm"][0]),
         float(ordered[0][0]["pixelSpacingMm"][1]),
     ]
+    analysis["volumeDimensionsVoxels"] = [int(value) for value in volume.shape]
+    analysis["geometry"] = volume_plane_geometry(analysis)
+    _VOLUME_CACHE[cache_key] = (cache_signature, volume, dict(analysis))
+    _VOLUME_CACHE.move_to_end(cache_key)
+    while len(_VOLUME_CACHE) > _VOLUME_CACHE_LIMIT:
+        _VOLUME_CACHE.popitem(last=False)
     return volume, analysis
 
 
@@ -600,6 +682,7 @@ def render_plane_preview_base64(
     slice_index: int,
     window_center: float,
     window_width: float,
+    spacing_mm: Optional[List[float]] = None,
     target_size: int = 512,
 ) -> Dict[str, Optional[str]]:
     """Render a real CT plane and an aligned mask overlay from the same volume."""
@@ -624,7 +707,23 @@ def render_plane_preview_base64(
     maximum = window_center + window_width / 2.0
     grayscale = (np.clip(image, minimum, maximum) - minimum) / (maximum - minimum)
     base = Image.fromarray((grayscale * 255).astype(np.uint8))
-    base.thumbnail((target_size, target_size), Image.Resampling.BILINEAR)
+    if spacing_mm:
+        if orientation == "axial":
+            physical_width = image.shape[1] * spacing_mm[2]
+            physical_height = image.shape[0] * spacing_mm[1]
+        elif orientation == "coronal":
+            physical_width = image.shape[1] * spacing_mm[2]
+            physical_height = image.shape[0] * spacing_mm[0]
+        else:
+            physical_width = image.shape[1] * spacing_mm[1]
+            physical_height = image.shape[0] * spacing_mm[0]
+        scale = target_size / max(physical_width, physical_height)
+        base = base.resize(
+            (max(1, round(physical_width * scale)), max(1, round(physical_height * scale))),
+            Image.Resampling.BILINEAR,
+        )
+    else:
+        base.thumbnail((target_size, target_size), Image.Resampling.BILINEAR)
     resized_size = base.size
     offset = ((target_size - base.width) // 2, (target_size - base.height) // 2)
     canvas = Image.new("L", (target_size, target_size), 0)
